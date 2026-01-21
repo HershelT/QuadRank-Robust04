@@ -414,8 +414,14 @@ class ROBUST04Retriever:
                 try:
                     full_model_name = self.RERANKER_MODELS.get(model_key, model_key)
                     print(f"Trying model: {full_model_name}...")
-                    cross_encoder = CrossEncoder(full_model_name, max_length=512, device=self.device)
+                    cross_encoder = CrossEncoder(
+                        full_model_name, 
+                        max_length=512, 
+                        device=self.device,
+                        automodel_args={'torch_dtype': torch.float16} if self.device == 'cuda' else None
+                    )
                     print(f"✓ Successfully loaded: {full_model_name}")
+                    print("✓ Enabled FP16 (half-precision) for speed")
                     model_name = full_model_name
                     break
                 except Exception as e:
