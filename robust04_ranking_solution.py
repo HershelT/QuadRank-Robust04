@@ -895,7 +895,7 @@ class ROBUST04Retriever:
         # ============================================================
         results_2 = self.run_neural_reranking(
             model_name='auto',  # Will try: BGE-v2 → Qwen3 → BGE-large → MiniLM
-            initial_hits=200,   # Increased from 150 for better recall
+            initial_hits=250,   # Increased from 150 for better recall
             batch_size=32
         )
         output_2 = os.path.join(self.output_dir, "run_2.res")
