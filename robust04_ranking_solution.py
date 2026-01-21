@@ -839,17 +839,25 @@ class ROBUST04Retriever:
         # RUN 2: Neural Reranking (2025 SOTA models with fallback)
         # ============================================================
         results_2 = self.run_neural_reranking(
-            model_name='auto',  # Will try: BGE-v2 → Qwen3 (Only if we have 16GB of VRAm→ BGE-large → MiniLM
-            initial_hits=100,
+            model_name='auto',  # Will try: BGE-v2 → Qwen3 → BGE-large → MiniLM
+            initial_hits=150,   # Increased from 100 for better recall
             batch_size=32
         )
         output_2 = os.path.join(self.output_dir, "run_2.res")
         self._write_trec_run(results_2, "run_2", output_2)
         
         # ============================================================
-        # RUN 3: RRF Fusion
+        # RUN 3: RRF Fusion of Neural + BM25+RM3 (Best of Both Worlds)
         # ============================================================
-        results_3 = self.run_rrf_fusion(k=60)
+        print(f"\n{'='*60}")
+        print("METHOD 3: RRF Fusion (Neural + BM25+RM3)")
+        print(f"{'='*60}")
+        print("Combining Neural reranking with BM25+RM3 for best results...")
+        
+        # Fuse Neural (run_2) with BM25+RM3 (run_1) using RRF
+        results_3 = self.reciprocal_rank_fusion([results_1, results_2], k=60)
+        print(f"✓ Fused Neural + BM25+RM3 results")
+        
         output_3 = os.path.join(self.output_dir, "run_3.res")
         self._write_trec_run(results_3, "run_3", output_3)
         
@@ -859,7 +867,7 @@ class ROBUST04Retriever:
         print(f"\nGenerated files:")
         print(f"  1. {output_1} - BM25 + RM3 (Query Expansion)")
         print(f"  2. {output_2} - Neural Reranking (Cross-Encoder)")
-        print(f"  3. {output_3} - RRF Fusion (Hybrid)")
+        print(f"  3. {output_3} - RRF Fusion (Neural + BM25+RM3) ⭐ BEST")
         print("\nReady for submission!")
         
         return {
