@@ -34,9 +34,9 @@ The system is designed to run on consumer hardware with 8GB VRAM and produces ou
 
 | Run | Method | MAP | P@10 | NDCG@20 |
 |-----|--------|-----|------|--------|
-| **run_3** | **RRF Fusion (Neural + BM25)** | **0.3038** ⭐ | 0.5136 | 0.4756 |
+| **run_3** | **RRF Fusion (k=30, weights=[1.5, 0.8])** | **0.3111** ⭐ | 0.4935 | 0.4699 |
 | run_1 | BM25 + RM3 | 0.3006 | 0.4683 | 0.4385 |
-| run_2 | Neural Reranking | 0.2702 | 0.4985 | 0.4577 |
+| run_2 | Neural Reranking (BGE-v2) | 0.2711 | 0.5010 | 0.4583 |
 
 ### Project Structure
 
@@ -363,13 +363,13 @@ By fusing these complementary methods, we achieve the best overall MAP.
 For each document d, compute:
 
 ```
-RRF_score(d) = Σ [1 / (k + rank_r(d))]
+RRF_score(d) = Σ [weight_r / (k + rank_r(d))]
 ```
 
 Where:
-- k = 60 (smoothing constant)
+- k = 30 (tuned via validation)
 - rank_r(d) = position of document d in ranker r
-- Rankers: Neural Reranking + BM25+RM3
+- weights = [1.5, 0.8] for [BM25+RM3, Neural] (favors BM25)
 
 #### Why This Works
 
@@ -382,9 +382,9 @@ Where:
 #### Advantages
 
 - Combines semantic understanding with keyword matching
+- Weighted fusion favors the stronger ranker (BM25)
 - No score normalization required
-- Robust to individual method failures
-- Achieves highest MAP (0.3038)
+- Achieves highest MAP (**0.3111**)
 
 ---
 
@@ -414,9 +414,9 @@ Actual performance on 199 test queries (evaluated with full ROBUST04 qrels):
 
 | Run | Method | MAP | P@5 | P@10 | NDCG@20 | Recall@1000 |
 |-----|--------|-----|-----|------|---------|-------------|
-| **3** | **RRF Fusion (Neural + BM25)** | **0.3038** ⭐ | 0.5638 | 0.5136 | 0.4756 | 0.7645 |
+| **3** | **RRF Fusion (k=30, w=[1.5,0.8])** | **0.3111** ⭐ | 0.5658 | 0.4935 | 0.4699 | 0.7710 |
 | 1 | BM25 + RM3 | 0.3006 | 0.5116 | 0.4683 | 0.4385 | 0.7735 |
-| 2 | Neural Reranking (BGE-v2) | 0.2702 | 0.5548 | 0.4985 | 0.4577 | 0.7139 |
+| 2 | Neural Reranking (BGE-v2) | 0.2711 | 0.5548 | 0.5010 | 0.4583 | 0.7139 |
 
 ### Key Observations
 

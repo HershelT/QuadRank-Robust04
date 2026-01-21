@@ -920,6 +920,7 @@ class ROBUST04Retriever:
                 [1.5, 1.0],   # Favor BM25 more
                 [1.0, 0.8],   # Slightly penalize Neural
                 [1.2, 0.8],   # Favor BM25 + penalize Neural
+                [1.5, 0.8],   # Strongly favor BM25
             ]
             
             # Use cached validation results
@@ -947,9 +948,9 @@ class ROBUST04Retriever:
             print(f"\n✓ Best: k={best_k}, weights={best_weights} → VAL MAP: {best_val_map:.4f}")
             print("--- Now running on 199 test queries with best params ---\n")
         else:
-            # Defaults if no validation
-            best_k = 60
-            best_weights = [1.2, 1.0]
+            # Optimal defaults from validation tuning (run_validation_on_50.py)
+            best_k = 30
+            best_weights = [1.5, 0.8]  # [BM25 weight, Neural weight]
         
         # Fuse Neural (run_2) with BM25+RM3 (run_1) using weighted RRF
         results_3 = self.weighted_reciprocal_rank_fusion(
