@@ -582,6 +582,49 @@ class ROBUST04Retriever:
         
         return fused_results
     
+    def weighted_reciprocal_rank_fusion(
+        self, 
+        ranked_lists: List[Dict[str, List[Tuple[str, float]]]], 
+        k: int = 60,
+        weights: List[float] = None
+    ) -> Dict[str, List[Tuple[str, float]]]:
+        """
+        Weighted Reciprocal Rank Fusion (RRF)
+        
+        Extends standard RRF with per-ranker weights:
+        score(d) = Σ [weight_i / (k + rank_i(d))]
+        
+        Args:
+            ranked_lists: List of result dictionaries from different rankers
+            k: Ranking constant (typically 60, lower = more weight to top ranks)
+            weights: Per-ranker weights (default: equal weights of 1.0)
+        """
+        if weights is None:
+            weights = [1.0] * len(ranked_lists)
+        
+        fused_results = {}
+        
+        # Get all query IDs
+        all_qids = set()
+        for results in ranked_lists:
+            all_qids.update(results.keys())
+        
+        for qid in all_qids:
+            doc_scores = defaultdict(float)
+            
+            for weight, results in zip(weights, ranked_lists):
+                if qid not in results:
+                    continue
+                
+                for rank, (docid, _) in enumerate(results[qid], 1):
+                    doc_scores[docid] += weight / (k + rank)
+            
+            # Sort by fused score
+            sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
+            fused_results[qid] = sorted_docs[:1000]
+        
+        return fused_results
+    
     def run_rrf_fusion(self, k: int = 60) -> Dict[str, List[Tuple[str, float]]]:
         """
         Run RRF Fusion combining multiple BM25 variants
@@ -840,7 +883,7 @@ class ROBUST04Retriever:
         # ============================================================
         results_2 = self.run_neural_reranking(
             model_name='auto',  # Will try: BGE-v2 → Qwen3 → BGE-large → MiniLM
-            initial_hits=150,   # Increased from 100 for better recall
+            initial_hits=200,   # Increased from 150 for better recall
             batch_size=32
         )
         output_2 = os.path.join(self.output_dir, "run_2.res")
@@ -852,11 +895,54 @@ class ROBUST04Retriever:
         print(f"\n{'='*60}")
         print("METHOD 3: RRF Fusion (Neural + BM25+RM3)")
         print(f"{'='*60}")
-        print("Combining Neural reranking with BM25+RM3 for best results...")
         
-        # Fuse Neural (run_2) with BM25+RM3 (run_1) using RRF
-        results_3 = self.reciprocal_rank_fusion([results_1, results_2], k=60)
-        print(f"✓ Fused Neural + BM25+RM3 results")
+        # --- Tune RRF parameters on validation set ---
+        if self.qrels:
+            print("\n--- Tuning RRF parameters on validation set ---")
+            # Grid of parameters to try
+            k_values = [30, 40, 60, 80]
+            # Weights: [BM25+RM3 weight, Neural weight]
+            weight_configs = [
+                [1.0, 1.0],   # Equal
+                [1.2, 1.0],   # Slightly favor BM25
+                [1.5, 1.0],   # Favor BM25 more
+                [1.0, 0.8],   # Slightly penalize Neural
+            ]
+            
+            # Filter results to validation qids only
+            val_results_1 = {qid: results_1[qid] for qid in self.val_qids if qid in results_1}
+            val_results_2 = {qid: results_2[qid] for qid in self.val_qids if qid in results_2}
+            
+            best_val_map = 0
+            best_k = 60
+            best_weights = [1.0, 1.0]
+            
+            for k in k_values:
+                for weights in weight_configs:
+                    # Fuse validation results
+                    val_fused = self.weighted_reciprocal_rank_fusion(
+                        [val_results_1, val_results_2], k=k, weights=weights
+                    )
+                    val_map = self.compute_map(val_fused)
+                    print(f"  k={k}, weights={weights} → MAP: {val_map:.4f}")
+                    
+                    if val_map > best_val_map:
+                        best_val_map = val_map
+                        best_k = k
+                        best_weights = weights
+            
+            print(f"\n✓ Best: k={best_k}, weights={best_weights} → VAL MAP: {best_val_map:.4f}")
+            print("--- Now running on 199 test queries with best params ---\n")
+        else:
+            # Defaults if no validation
+            best_k = 60
+            best_weights = [1.2, 1.0]
+        
+        # Fuse Neural (run_2) with BM25+RM3 (run_1) using weighted RRF
+        results_3 = self.weighted_reciprocal_rank_fusion(
+            [results_1, results_2], k=best_k, weights=best_weights
+        )
+        print(f"✓ Fused Neural + BM25+RM3 (k={best_k}, weights={best_weights})")
         
         output_3 = os.path.join(self.output_dir, "run_3.res")
         self._write_trec_run(results_3, "run_3", output_3)
