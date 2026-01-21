@@ -26,9 +26,17 @@ This system implements a complete retrieval pipeline for the TREC ROBUST04 test 
 
 1. **BM25 + RM3**: Classical probabilistic retrieval with pseudo-relevance feedback
 2. **Neural Reranking**: Two-stage retrieval using transformer-based cross-encoders
-3. **RRF Fusion**: Hybrid approach combining multiple rankers via Reciprocal Rank Fusion
+3. **RRF Fusion (Neural + BM25+RM3)**: Hybrid approach combining neural precision with BM25 recall ⭐ Best performer
 
 The system is designed to run on consumer hardware with 8GB VRAM and produces output in standard TREC format for evaluation.
+
+### Results Summary
+
+| Run | Method | MAP | P@10 | NDCG@20 |
+|-----|--------|-----|------|--------|
+| **run_3** | **RRF Fusion (Neural + BM25)** | **0.3038** ⭐ | 0.5136 | 0.4756 |
+| run_1 | BM25 + RM3 | 0.3006 | 0.4683 | 0.4385 |
+| run_2 | Neural Reranking | 0.2702 | 0.4985 | 0.4577 |
 
 ### Project Structure
 
@@ -266,6 +274,11 @@ When `--tune` is enabled, the system performs grid search over:
 - fb_docs: [5, 10]
 - original_weight: [0.25, 0.5]
 
+**Best parameters found (MAP 0.2714 on training set):**
+```
+k1=0.7, b=0.4, fb_terms=50, fb_docs=5, original_weight=0.5
+```
+
 ---
 
 ### Method 2: Neural Reranking
@@ -278,9 +291,10 @@ Two-stage retrieval combining efficient first-stage retrieval with precise neura
 
 #### Algorithm
 
-1. **Stage 1 (Retrieval)**: BM25 retrieves top-100 candidate documents
-2. **Stage 2 (Reranking)**: Cross-encoder scores each query-document pair
-3. Documents are reordered by neural relevance scores
+1. **Stage 1 (Retrieval)**: BM25 retrieves top-1000 candidate documents
+2. **Stage 2 (Reranking)**: Cross-encoder reranks top-150 documents
+3. **Stage 3 (Merge)**: Reranked documents are merged with remaining BM25 results
+4. Final ranking: top-150 reranked + remaining BM25 docs (preserving recall)
 
 #### Cross-Encoder Architecture
 
@@ -332,13 +346,17 @@ This extraction is critical for neural model performance. Without it, models rec
 
 ---
 
-### Method 3: Reciprocal Rank Fusion
+### Method 3: Reciprocal Rank Fusion (Neural + BM25+RM3)
 
 **Classification**: Advanced method (beyond class material)
 
 #### Description
 
-RRF combines multiple ranked lists into a unified ranking without requiring score normalization. Documents that consistently rank highly across multiple retrieval methods receive boosted scores.
+RRF combines the Neural Reranking results with BM25+RM3 results to leverage the strengths of both approaches:
+- **BM25+RM3** provides excellent recall (finds more relevant documents)
+- **Neural Reranking** provides excellent precision (ranks relevant docs higher at top)
+
+By fusing these complementary methods, we achieve the best overall MAP.
 
 #### Algorithm
 
@@ -351,21 +369,22 @@ RRF_score(d) = Σ [1 / (k + rank_r(d))]
 Where:
 - k = 60 (smoothing constant)
 - rank_r(d) = position of document d in ranker r
-- Sum is over all rankers where d appears
+- Rankers: Neural Reranking + BM25+RM3
 
-#### Rankers Combined
+#### Why This Works
 
-1. BM25 (k1=0.9, b=0.4) - Default parameters
-2. BM25 (k1=0.7, b=0.65) - Tuned parameters
-3. BM25 + RM3 (aggressive) - fb_terms=70, original_weight=0.25
-4. BM25 + RM3 (conservative) - fb_terms=10, original_weight=0.5
+| Method | Strength | Weakness |
+|--------|----------|----------|
+| BM25+RM3 | High recall (77% @ 1000) | Lower precision at top |
+| Neural | High precision (P@10: 0.50) | Lower recall (71% @ 1000) |
+| **RRF Fusion** | **Best of both** | **Minimal tradeoffs** |
 
 #### Advantages
 
+- Combines semantic understanding with keyword matching
 - No score normalization required
-- Robust to different score scales
-- No training data needed
-- Reduces single-method blind spots
+- Robust to individual method failures
+- Achieves highest MAP (0.3038)
 
 ---
 
@@ -389,22 +408,35 @@ Each result file contains up to 1000 documents per query, ordered by decreasing 
 
 ---
 
-## Expected Performance
+## Evaluation Results
 
-Performance estimates based on published benchmarks and empirical testing:
+Actual performance on 199 test queries (evaluated with full ROBUST04 qrels):
 
-| Run | Method | Expected MAP | Runtime |
-|-----|--------|--------------|---------|
-| 1 | BM25 + RM3 | 0.28 - 0.30 | 2-5 minutes |
-| 2 | Neural (Qwen3) | 0.35 - 0.42 | 20-40 minutes |
-| 2 | Neural (BGE-v2) | 0.33 - 0.38 | 15-30 minutes |
-| 2 | Neural (MiniLM) | 0.30 - 0.35 | 10-20 minutes |
-| 3 | RRF Fusion | 0.29 - 0.32 | 5-10 minutes |
+| Run | Method | MAP | P@5 | P@10 | NDCG@20 | Recall@1000 |
+|-----|--------|-----|-----|------|---------|-------------|
+| **3** | **RRF Fusion (Neural + BM25)** | **0.3038** ⭐ | 0.5638 | 0.5136 | 0.4756 | 0.7645 |
+| 1 | BM25 + RM3 | 0.3006 | 0.5116 | 0.4683 | 0.4385 | 0.7735 |
+| 2 | Neural Reranking (BGE-v2) | 0.2702 | 0.5548 | 0.4985 | 0.4577 | 0.7139 |
+
+### Key Observations
+
+1. **RRF Fusion achieves best MAP** by combining BM25's recall with Neural's precision
+2. **Neural Reranking has highest P@10** (0.4985) - excellent at ranking top documents
+3. **BM25+RM3 has highest Recall@1000** (0.7735) - finds the most relevant documents
+
+### Runtime
+
+| Method | Runtime (RTX 5070, 199 queries) |
+|--------|--------------------------------|
+| BM25 + RM3 | ~12 seconds |
+| Neural Reranking | ~27 minutes |
+| RRF Fusion | < 1 second (post-processing) |
+| **Total** | **~28 minutes** |
 
 Notes:
 - Neural reranking runtime depends on GPU capability
 - First run includes index download (~1.7GB)
-- Parameter tuning adds ~20-30 minutes
+- Parameter tuning adds ~5 minutes
 
 ---
 
