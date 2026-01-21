@@ -780,16 +780,47 @@ class ROBUST04Retriever:
         print(f"Output directory: {self.output_dir}")
         print(f"Test queries: {len(self.test_qids)}")
         
-        # Optional: Parameter tuning
+        # Parameter caching file
+        params_cache_file = os.path.join(self.output_dir, "best_params.json")
+        
+        # Check for cached parameters first
         if tune_params and self.qrels:
-            best_params = self.tune_bm25_rm3_params()
+            if os.path.exists(params_cache_file):
+                print(f"\n📁 Found cached parameters at {params_cache_file}")
+                with open(params_cache_file, 'r') as f:
+                    cached = json.load(f)
+                print(f"   Cached params: {cached}")
+                use_cached = input("Use cached parameters? [Y/n]: ").strip().lower()
+                if use_cached != 'n':
+                    best_params = cached
+                    print("   ✓ Using cached parameters")
+                else:
+                    best_params = self.tune_bm25_rm3_params()
+                    # Save to cache
+                    with open(params_cache_file, 'w') as f:
+                        json.dump(best_params, f, indent=2)
+                    print(f"\n💾 Saved best parameters to {params_cache_file}")
+            else:
+                best_params = self.tune_bm25_rm3_params()
+                # Save to cache
+                with open(params_cache_file, 'w') as f:
+                    json.dump(best_params, f, indent=2)
+                print(f"\n💾 Saved best parameters to {params_cache_file}")
         else:
-            # Default optimized parameters from research
-            best_params = {
-                'k1': 0.7, 'b': 0.65,
-                'fb_terms': 70, 'fb_docs': 10,
-                'original_weight': 0.25
-            }
+            # Check for cached params even if not tuning
+            if os.path.exists(params_cache_file):
+                print(f"\n📁 Loading cached parameters from {params_cache_file}")
+                with open(params_cache_file, 'r') as f:
+                    best_params = json.load(f)
+                print(f"   Params: {best_params}")
+            else:
+                # Default optimized parameters from research
+                best_params = {
+                    'k1': 0.7, 'b': 0.65,
+                    'fb_terms': 70, 'fb_docs': 10,
+                    'original_weight': 0.25
+                }
+                print(f"\n   Using default params: {best_params}")
         
         # ============================================================
         # RUN 1: BM25 + RM3
