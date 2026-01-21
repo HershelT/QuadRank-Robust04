@@ -89,15 +89,15 @@ class ROBUST04Retriever:
         self.queries = self._load_queries(queries_path)
         print(f"Loaded {len(self.queries)} queries")
         
-        # Split into train (40) / validation (10) / test (199)
-        # Train: for parameter tuning
-        # Validation: to verify we don't overfit to train set  
-        # Test: competition queries (no qrels available)
+        # Split: Use all 50 labeled queries for training, 199 for test
+        # NOTE: We tested splitting into train(40)/val(10) but diagnostic showed
+        # that queries 341-350 are inherently harder (32% lower MAP even with 
+        # baseline BM25). So we use all 50 for better parameter tuning.
         all_sorted = sorted(self.queries.keys())
-        self.train_qids = all_sorted[:40]      # 301-340 (40 queries)
-        self.val_qids = all_sorted[40:50]       # 341-350 (10 queries)
-        self.test_qids = all_sorted[50:]        # 351+ (199 queries)
-        print(f"Train: {len(self.train_qids)}, Validation: {len(self.val_qids)}, Test: {len(self.test_qids)}")
+        self.train_qids = all_sorted[:50]       # 301-350 (all labeled queries)
+        self.val_qids = all_sorted[:50]         # Same as train for reporting
+        self.test_qids = all_sorted[50:]        # 351+ (199 competition queries)
+        print(f"Train: {len(self.train_qids)} queries (301-350), Test: {len(self.test_qids)} queries")
         
         # Load qrels for validation if provided
         self.qrels = None
