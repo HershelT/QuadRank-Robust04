@@ -428,7 +428,13 @@ class ROBUST04Retriever:
             # Use specified model
             full_model_name = self.RERANKER_MODELS.get(model_name, model_name)
             print(f"Loading model: {full_model_name}")
-            cross_encoder = CrossEncoder(full_model_name, max_length=512, device=self.device)
+            cross_encoder = CrossEncoder(
+                full_model_name, 
+                max_length=512, 
+                device=self.device,
+                automodel_args={'torch_dtype': torch.float16} if self.device == 'cuda' else None
+            )
+            print("✓ Enabled FP16 (half-precision) for speed")
             model_name = full_model_name
         
         print(f"Model: {model_name}")
@@ -467,88 +473,168 @@ class ROBUST04Retriever:
             val_map = self.compute_map(val_results)
             print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
             
-            # Cache validation results for RRF tuning
+    def run_neural_reranking(self, model_name: str = 'auto',
+                             initial_hits: int = 100, final_hits: int = 1000,
+                             batch_size: int = 32) -> Dict[str, List[Tuple[str, float]]]:
+        """
+        Two-stage retrieval with neural reranking using MaxP (Max Passage) strategy
+        
+        Stage 1: BM25 retrieval for initial candidates
+        Stage 2: Cross-encoder reranking on SLIDING WINDOWS of text
+        
+        MaxP Strategy:
+        - Split long documents into overlapping chunks (passages)
+        - Score each chunk independently
+        - Document score = Max(chunk scores)
+        - Essential for ROBUST04 where documents are long (2000+ words)
+        
+        Args:
+            model_name: Model key or full HuggingFace model path
+            initial_hits: Number of BM25 candidates to rerank
+            final_hits: Final number of results to return
+            batch_size: Batch size for neural model
+        """
+        print(f"\n{'='*60}")
+        print("METHOD 2: Neural Reranking with MaxP Sliding Window")
+        print(f"{'='*60}")
+        
+        # Model selection
+        if model_name == 'auto':
+            model_priority = ['bge-v2-m3', 'qwen3-0.6b-cls', 'bge-large', 'minilm']
+            cross_encoder = None
+            for model_key in model_priority:
+                try:
+                    full_model_name = self.RERANKER_MODELS.get(model_key, model_key)
+                    print(f"Trying model: {full_model_name}...")
+                    cross_encoder = CrossEncoder(full_model_name, max_length=512, device=self.device)
+                    print(f"✓ Successfully loaded: {full_model_name}")
+                    model_name = full_model_name
+                    break
+                except Exception as e:
+                    print(f"✗ Failed to load {full_model_name}: {e}")
+                    continue
+            if cross_encoder is None:
+                raise RuntimeError("No reranker model could be loaded!")
+        else:
+            full_model_name = self.RERANKER_MODELS.get(model_name, model_name)
+            print(f"Loading model: {full_model_name}")
+            cross_encoder = CrossEncoder(full_model_name, max_length=512, device=self.device)
+            model_name = full_model_name
+        
+        print(f"Model: {model_name}")
+        print(f"Initial BM25 hits: {initial_hits}, Batch size: {batch_size}")
+        print("Strategy: MaxP (splitting docs into overlapping 512-token chunks)")
+        
+        self.searcher.set_bm25(0.9, 0.4)
+        
+        def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 500) -> List[str]:
+            """Split text into overlapping chunks (approx chars)"""
+            if len(text) <= chunk_size:
+                return [text]
+            chunks = []
+            start = 0
+            while start < len(text):
+                end = min(start + chunk_size, len(text))
+                chunks.append(text[start:end])
+                if end == len(text):
+                    break
+                start += (chunk_size - overlap)
+            return chunks
+
+        def rerank_batch(qids, qrels=None, desc="Reranking"):
+            batch_results = {}
+            for qid in tqdm(qids, desc=desc):
+                query = self.queries[qid]
+                
+                # Full recall retrieval
+                all_bm25_hits = self.searcher.search(query, k=1000)
+                if not all_bm25_hits:
+                    batch_results[qid] = []
+                    continue
+                
+                # Rerank top N
+                rerank_hits = all_bm25_hits[:initial_hits]
+                remaining_hits = all_bm25_hits[initial_hits:]
+                
+                # Prepare all chunks for all docs
+                pairs = []
+                doc_chunk_map = []  # (docid, num_chunks)
+                
+                for hit in rerank_hits:
+                    doc = self.searcher.doc(hit.docid)
+                    if doc:
+                        raw = doc.raw() if hasattr(doc, 'raw') else doc.contents()
+                        if raw:
+                            clean = self._extract_text_robust(raw)
+                            # Generate chunks (MaxP)
+                            chunks = chunk_text(clean)
+                            # Limit to max 4 chunks per doc to prevent explosion
+                            chunks = chunks[:4]
+                            
+                            for chunk in chunks:
+                                pairs.append([query, chunk])
+                            doc_chunk_map.append((hit.docid, len(chunks)))
+                
+                if not pairs:
+                    batch_results[qid] = [(h.docid, h.score) for h in all_bm25_hits[:final_hits]]
+                    continue
+                
+                # Predict scores for all chunks
+                try:
+                    chunk_scores = cross_encoder.predict(pairs, batch_size=batch_size, show_progress_bar=False)
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower():
+                        print(f"⚠ OOM, reducing batch size")
+                        torch.cuda.empty_cache()
+                        chunk_scores = cross_encoder.predict(pairs, batch_size=batch_size//2, show_progress_bar=False)
+                    else:
+                        raise
+
+                # Aggregate MaxP scores
+                doc_max_scores = []
+                score_idx = 0
+                for docid, num_chunks in doc_chunk_map:
+                    if num_chunks > 0:
+                        # Max over this doc's chunks
+                        max_score = np.max(chunk_scores[score_idx : score_idx+num_chunks])
+                        doc_max_scores.append((docid, float(max_score)))
+                        score_idx += num_chunks
+                
+                # Sort and merge
+                doc_max_scores.sort(key=lambda x: x[1], reverse=True)
+                
+                # Merge with remaining BM25
+                final_res = doc_max_scores[:]
+                min_neural = doc_max_scores[-1][1] if doc_max_scores else 0
+                
+                seen = {d for d, _ in doc_max_scores}
+                for i, hit in enumerate(remaining_hits):
+                    if hit.docid not in seen:
+                        # Scale BM25 to be below neural
+                        final_res.append((hit.docid, min_neural - 0.01 * (i + 1)))
+                
+                batch_results[qid] = final_res[:final_hits]
+                
+                if self.device == 'cuda' and int(qid) % 20 == 0:
+                    torch.cuda.empty_cache()
+            
+            return batch_results
+
+        # === VALIDATE FIRST ===
+        if self.qrels:
+            print("\n--- Validating on held-out queries (MaxP) ---")
+            val_results = rerank_batch(self.val_qids, self.qrels, desc="Val MaxP")
+            val_map = self.compute_map(val_results)
+            print(f"✓ Validation MAP (MaxP): {val_map:.4f}")
             self.val_results_neural = val_results
             print("   (Cached for RRF tuning)")
-            print("--- Now running on 199 test queries ---\n")
         
-        # === NOW run on test queries ===
-        results = {}
+        # === TEST RUN ===
+        print("\n--- Running on test queries (MaxP) ---")
+        results = rerank_batch(self.test_qids, desc="Test MaxP")
         
-        for qid in tqdm(self.test_qids, desc="Neural Reranking"):
-            query = self.queries[qid]
-            
-            # Stage 1: BM25 retrieval - get 1000 docs for full recall
-            all_bm25_hits = self.searcher.search(query, k=1000)
-            
-            if not all_bm25_hits:
-                results[qid] = []
-                continue
-            
-            # Only rerank top initial_hits (e.g., 100-200) for efficiency
-            rerank_hits = all_bm25_hits[:initial_hits]
-            remaining_hits = all_bm25_hits[initial_hits:]
-            
-            # Prepare query-document pairs for reranking
-            pairs = []
-            doc_ids = []
-            for hit in rerank_hits:
-                doc = self.searcher.doc(hit.docid)
-                if doc:
-                    # CRITICAL: Use robust extraction for SGML documents
-                    raw_content = doc.raw() if hasattr(doc, 'raw') else doc.contents()
-                    if raw_content:
-                        clean_content = self._extract_text_robust(raw_content)
-                        # Truncate to ~512 tokens (approx 2000 chars)
-                        pairs.append([query, clean_content[:2000]])
-                        doc_ids.append(hit.docid)
-            
-            if not pairs:
-                # Fallback to BM25 scores
-                results[qid] = [(hit.docid, hit.score) for hit in all_bm25_hits[:final_hits]]
-                continue
-            
-            # Stage 2: Cross-encoder reranking on top candidates
-            try:
-                scores = cross_encoder.predict(pairs, batch_size=batch_size, show_progress_bar=False)
-            except RuntimeError as e:
-                # Handle OOM by reducing batch size
-                if "out of memory" in str(e).lower():
-                    print(f"\n⚠ OOM error, reducing batch size to {batch_size//2}")
-                    torch.cuda.empty_cache()
-                    scores = cross_encoder.predict(pairs, batch_size=batch_size//2, show_progress_bar=False)
-                else:
-                    raise
-            
-            # Combine reranked docs with remaining BM25 docs
-            reranked = list(zip(doc_ids, scores))
-            reranked.sort(key=lambda x: x[1], reverse=True)
-            
-            # Get minimum neural score to ensure remaining docs are ranked lower
-            min_neural_score = min(scores) if len(scores) > 0 else 0
-            
-            # Build final results: reranked docs first, then remaining BM25 docs
-            final_results = [(docid, float(score)) for docid, score in reranked]
-            
-            # Add remaining BM25 docs with scores below min neural score
-            reranked_docids = set(doc_ids)
-            for i, hit in enumerate(remaining_hits):
-                if hit.docid not in reranked_docids:
-                    # Assign decreasing scores below min neural score
-                    adjusted_score = min_neural_score - 0.01 * (i + 1)
-                    final_results.append((hit.docid, adjusted_score))
-            
-            results[qid] = final_results[:final_hits]
-            
-            # Periodic GPU memory cleanup
-            if self.device == 'cuda' and int(qid) % 50 == 0:
-                torch.cuda.empty_cache()
-        
-        # Clear GPU memory
         del cross_encoder
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
+        torch.cuda.empty_cache()
         return results
     
     # ============================================================
