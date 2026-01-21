@@ -385,7 +385,7 @@ class ROBUST04Retriever:
         # Model selection with auto-fallback
         if model_name == 'auto':
             # Try models in order of preference
-            model_priority = ['qwen3-0.6b-cls', 'bge-v2-m3', 'bge-large', 'minilm']
+            model_priority = ['bge-v2-m3', 'qwen3-0.6b-cls', 'bge-large', 'minilm']
             cross_encoder = None
             
             for model_key in model_priority:
@@ -688,7 +688,7 @@ class ROBUST04Retriever:
         # RUN 2: Neural Reranking (2025 SOTA models with fallback)
         # ============================================================
         results_2 = self.run_neural_reranking(
-            model_name='auto',  # Will try: Qwen3 → BGE-v2 → BGE-large → MiniLM
+            model_name='auto',  # Will try: BGE-v2 → Qwen3 (Only if we have 16GB of VRAm→ BGE-large → MiniLM
             initial_hits=100,
             batch_size=32
         )
