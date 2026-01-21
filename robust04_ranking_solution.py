@@ -946,11 +946,31 @@ class ROBUST04Retriever:
                         best_weights = weights
             
             print(f"\n✓ Best: k={best_k}, weights={best_weights} → VAL MAP: {best_val_map:.4f}")
+            
+            # Save RRF params to cache
+            if os.path.exists(params_cache_file):
+                with open(params_cache_file, 'r') as f:
+                    cached = json.load(f)
+            else:
+                cached = {}
+            cached['rrf_k'] = best_k
+            cached['rrf_weights'] = best_weights
+            with open(params_cache_file, 'w') as f:
+                json.dump(cached, f, indent=2)
+            print(f"💾 Saved RRF params to {params_cache_file}")
             print("--- Now running on 199 test queries with best params ---\n")
         else:
-            # Optimal defaults from validation tuning (run_validation_on_50.py)
-            best_k = 30
-            best_weights = [1.5, 0.8]  # [BM25 weight, Neural weight]
+            # Try to load from cache, otherwise use optimal defaults
+            if os.path.exists(params_cache_file):
+                with open(params_cache_file, 'r') as f:
+                    cached = json.load(f)
+                best_k = cached.get('rrf_k', 30)
+                best_weights = cached.get('rrf_weights', [1.5, 0.8])
+                print(f"📁 Loaded RRF params from cache: k={best_k}, weights={best_weights}")
+            else:
+                # Optimal defaults from validation tuning (run_validation_on_50.py)
+                best_k = 30
+                best_weights = [1.5, 0.8]  # [BM25 weight, Neural weight]
         
         # Fuse Neural (run_2) with BM25+RM3 (run_1) using weighted RRF
         results_3 = self.weighted_reciprocal_rank_fusion(
@@ -967,7 +987,7 @@ class ROBUST04Retriever:
         print(f"\nGenerated files:")
         print(f"  1. {output_1} - BM25 + RM3 (Query Expansion)")
         print(f"  2. {output_2} - Neural Reranking (Cross-Encoder)")
-        print(f"  3. {output_3} - RRF Fusion (Neural + BM25+RM3) ⭐ BEST")
+        print(f"  3. {output_3} - RRF Fusion (k={best_k}, w={best_weights}) ⭐ BEST")
         print("\nReady for submission!")
         
         return {
