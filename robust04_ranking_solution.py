@@ -18,6 +18,7 @@ Date: January 2026
 import os
 import sys
 import time
+import re
 import argparse
 from collections import defaultdict
 from typing import List, Dict, Tuple, Optional
@@ -180,6 +181,100 @@ class ROBUST04Retriever:
         return np.mean(aps) if aps else 0.0
 
     # ============================================================
+    # TEXT EXTRACTION (Critical for SGML-formatted ROBUST04 docs)
+    # ============================================================
+    
+    def _extract_text_robust(self, raw_content: str) -> str:
+        """
+        Extract clean text from ROBUST04 SGML-formatted documents.
+        
+        ROBUST04 documents (TREC Disks 4 & 5) are stored in SGML format with:
+        - XML-like tags: <DOC>, <DOCNO>, <TEXT>, <HEADLINE>, etc.
+        - Potential null bytes from encoding issues
+        - Metadata headers that should not be fed to neural models
+        
+        This method extracts the actual document content suitable for
+        neural reranking models.
+        
+        Args:
+            raw_content: Raw SGML document string from Pyserini
+            
+        Returns:
+            Clean text with title and body concatenated
+        """
+        if not raw_content:
+            return ""
+        
+        text = raw_content
+        
+        # 1. Remove null bytes (encoding artifacts that cause "s p a c e d" text)
+        text = text.replace('\x00', '')
+        
+        # 2. Remove SGML comments
+        text = re.sub(r'<!--.*?-->', ' ', text, flags=re.DOTALL)
+        
+        # 3. Extract title from various possible tags
+        title = ""
+        title_patterns = [
+            r'<HEAD[^>]*>(.*?)</HEAD>',
+            r'<TI[^>]*>(.*?)</TI>',
+            r'<HL[^>]*>(.*?)</HL>',
+            r'<HEADLINE[^>]*>(.*?)</HEADLINE>',
+            r'<HEADER[^>]*>(.*?)</HEADER>',
+        ]
+        for pattern in title_patterns:
+            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            if match:
+                title = match.group(1).strip()
+                break
+        
+        # 4. Extract body from various possible tags
+        body = ""
+        body_patterns = [
+            r'<TEXT[^>]*>(.*?)</TEXT>',
+            r'<LP[^>]*>(.*?)</LP>',
+            r'<LEADPARA[^>]*>(.*?)</LEADPARA>',
+            r'<BODY[^>]*>(.*?)</BODY>',
+        ]
+        for pattern in body_patterns:
+            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            if match:
+                body = match.group(1).strip()
+                break
+        
+        # 5. Fallback: if no structured content found, strip all tags
+        if not body:
+            # Remove all tags and use the middle portion (skip metadata at start)
+            clean_text = re.sub(r'<[^>]+>', ' ', text)
+            clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+            if len(clean_text) > 100:
+                body = clean_text[100:]  # Skip likely metadata
+                if not title:
+                    title = clean_text[:100]
+            else:
+                body = clean_text
+        
+        def clean_text_segment(s: str) -> str:
+            """Remove remaining tags and normalize whitespace"""
+            s = re.sub(r'<[^>]+>', ' ', s)  # Remove any remaining tags
+            s = re.sub(r'\s+', ' ', s)       # Normalize whitespace
+            return s.strip()
+        
+        title = clean_text_segment(title)
+        body = clean_text_segment(body)
+        
+        # 6. Fix "spaced out" text from null byte artifacts
+        # Detection: if >40% of characters are spaces in a long string, it's corrupted
+        combined = f"{title}. {body}" if title else body
+        if len(combined) > 50:
+            space_ratio = combined.count(' ') / len(combined)
+            if space_ratio > 0.4:
+                # Remove single spaces between single characters: "w o r d" -> "word"
+                combined = re.sub(r'(?<=\w) (?=\w)', '', combined)
+        
+        return combined
+
+    # ============================================================
     # METHOD 1: BM25 + RM3 (Query Expansion)
     # ============================================================
     
@@ -338,12 +433,13 @@ class ROBUST04Retriever:
             for hit in bm25_hits:
                 doc = self.searcher.doc(hit.docid)
                 if doc:
-                    # Get document content
-                    content = doc.raw() if hasattr(doc, 'raw') else doc.contents()
-                    if content:
-                        # Truncate long documents
-                        content = content[:2000]
-                        pairs.append([query, content])
+                    # CRITICAL: Use robust extraction for SGML documents
+                    # Raw content contains XML tags, null bytes, and metadata
+                    raw_content = doc.raw() if hasattr(doc, 'raw') else doc.contents()
+                    if raw_content:
+                        clean_content = self._extract_text_robust(raw_content)
+                        # Truncate to ~512 tokens (approx 2000 chars)
+                        pairs.append([query, clean_content[:2000]])
                         doc_ids.append(hit.docid)
             
             if not pairs:

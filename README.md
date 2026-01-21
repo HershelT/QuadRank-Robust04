@@ -291,6 +291,29 @@ Unlike bi-encoders that encode queries and documents separately, cross-encoders:
 
 This architecture captures semantic relationships that keyword matching misses (e.g., synonyms, paraphrases, implicit relevance).
 
+#### Document Text Extraction
+
+ROBUST04 documents are stored in SGML format (TREC Disks 4 & 5), which requires preprocessing before neural reranking:
+
+```
+Raw SGML:
+<DOC>
+<DOCNO>LA041590-0140</DOCNO>
+<DATE><P>April 15, 1990</P></DATE>
+<HEADLINE><P>Coyotes in Suburbs</P></HEADLINE>
+<TEXT><P>The actual article content...</P></TEXT>
+</DOC>
+```
+
+The system automatically:
+1. Removes null bytes (encoding artifacts causing "s p a c e d" text)
+2. Extracts content from `<TEXT>`, `<HEADLINE>`, `<BODY>` tags
+3. Strips remaining SGML markup
+4. Repairs character spacing corruption
+5. Concatenates title and body for the model
+
+This extraction is critical for neural model performance. Without it, models receive XML markup instead of clean text, severely degrading results.
+
 #### Available Models
 
 | Model | Parameters | Context | Performance |
