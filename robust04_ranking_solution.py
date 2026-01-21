@@ -116,6 +116,10 @@ class ROBUST04Retriever:
         if self.device == 'cuda':
             print(f"GPU: {torch.cuda.get_device_name(0)}")
             print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        
+        # Cache for validation results (to reuse in RRF tuning)
+        self.val_results_bm25 = None
+        self.val_results_neural = None
     
     def _load_queries(self, path: str) -> Dict[str, str]:
         """Load queries from file"""
@@ -331,6 +335,10 @@ class ROBUST04Retriever:
             val_map = self.compute_map(val_results)
             print(f"✓ Train MAP ({len(self.train_qids)} queries): {train_map:.4f}")
             print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
+            
+            # Cache validation results for RRF tuning
+            self.val_results_bm25 = val_results
+            print("   (Cached for RRF tuning)")
             print("--- Now running on 199 test queries ---\n")
         
         # === NOW run on test queries ===
@@ -458,6 +466,10 @@ class ROBUST04Retriever:
             
             val_map = self.compute_map(val_results)
             print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
+            
+            # Cache validation results for RRF tuning
+            self.val_results_neural = val_results
+            print("   (Cached for RRF tuning)")
             print("--- Now running on 199 test queries ---\n")
         
         # === NOW run on test queries ===
@@ -897,8 +909,8 @@ class ROBUST04Retriever:
         print(f"{'='*60}")
         
         # --- Tune RRF parameters on validation set ---
-        if self.qrels:
-            print("\n--- Tuning RRF parameters on validation set ---")
+        if self.qrels and self.val_results_bm25 and self.val_results_neural:
+            print("\n--- Tuning RRF parameters on validation set (using cached results) ---")
             # Grid of parameters to try
             k_values = [30, 40, 60, 80]
             # Weights: [BM25+RM3 weight, Neural weight]
@@ -907,11 +919,12 @@ class ROBUST04Retriever:
                 [1.2, 1.0],   # Slightly favor BM25
                 [1.5, 1.0],   # Favor BM25 more
                 [1.0, 0.8],   # Slightly penalize Neural
+                [1.2, 0.8],   # Favor BM25 + penalize Neural
             ]
             
-            # Filter results to validation qids only
-            val_results_1 = {qid: results_1[qid] for qid in self.val_qids if qid in results_1}
-            val_results_2 = {qid: results_2[qid] for qid in self.val_qids if qid in results_2}
+            # Use cached validation results
+            val_results_1 = self.val_results_bm25
+            val_results_2 = self.val_results_neural
             
             best_val_map = 0
             best_k = 60
