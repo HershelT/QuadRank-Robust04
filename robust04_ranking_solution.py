@@ -89,10 +89,15 @@ class ROBUST04Retriever:
         self.queries = self._load_queries(queries_path)
         print(f"Loaded {len(self.queries)} queries")
         
-        # Split into train (first 50) and test (remaining 199)
-        self.train_qids = sorted(self.queries.keys())[:50]
-        self.test_qids = sorted(self.queries.keys())[50:]
-        print(f"Train queries: {len(self.train_qids)}, Test queries: {len(self.test_qids)}")
+        # Split into train (40) / validation (10) / test (199)
+        # Train: for parameter tuning
+        # Validation: to verify we don't overfit to train set  
+        # Test: competition queries (no qrels available)
+        all_sorted = sorted(self.queries.keys())
+        self.train_qids = all_sorted[:40]      # 301-340 (40 queries)
+        self.val_qids = all_sorted[40:50]       # 341-350 (10 queries)
+        self.test_qids = all_sorted[50:]        # 351+ (199 queries)
+        print(f"Train: {len(self.train_qids)}, Validation: {len(self.val_qids)}, Test: {len(self.test_qids)}")
         
         # Load qrels for validation if provided
         self.qrels = None
@@ -304,7 +309,31 @@ class ROBUST04Retriever:
         print(f"Parameters: k1={k1}, b={b}, fb_terms={fb_terms}, "
               f"fb_docs={fb_docs}, original_weight={original_weight}")
         
-        # Configure BM25 and RM3
+        # === VALIDATE FIRST on train/val sets ===
+        if self.qrels:
+            print("\n--- Validating on held-out queries FIRST ---")
+            self.searcher.set_bm25(k1, b)
+            self.searcher.set_rm3(fb_terms, fb_docs, original_weight)
+            
+            train_results = {}
+            for qid in self.train_qids:
+                hits_list = self.searcher.search(self.queries[qid], k=hits)
+                train_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
+            
+            val_results = {}
+            for qid in self.val_qids:
+                hits_list = self.searcher.search(self.queries[qid], k=hits)
+                val_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
+            
+            self.searcher.unset_rm3()
+            
+            train_map = self.compute_map(train_results)
+            val_map = self.compute_map(val_results)
+            print(f"✓ Train MAP ({len(self.train_qids)} queries): {train_map:.4f}")
+            print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
+            print("--- Now running on 199 test queries ---\n")
+        
+        # === NOW run on test queries ===
         self.searcher.set_bm25(k1, b)
         self.searcher.set_rm3(fb_terms, fb_docs, original_weight)
         
@@ -314,22 +343,7 @@ class ROBUST04Retriever:
             hits_list = self.searcher.search(query, k=hits)
             results[qid] = [(hit.docid, hit.score) for hit in hits_list]
         
-        # Disable RM3 for other methods
         self.searcher.unset_rm3()
-        
-        # Validate on training set
-        train_results = {}
-        self.searcher.set_bm25(k1, b)
-        self.searcher.set_rm3(fb_terms, fb_docs, original_weight)
-        for qid in self.train_qids:
-            query = self.queries[qid]
-            hits_list = self.searcher.search(query, k=hits)
-            train_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
-        self.searcher.unset_rm3()
-        
-        if self.qrels:
-            train_map = self.compute_map(train_results)
-            print(f"Train MAP (50 queries): {train_map:.4f}")
         
         return results
     
@@ -415,6 +429,38 @@ class ROBUST04Retriever:
         # Configure BM25 for initial retrieval
         self.searcher.set_bm25(0.9, 0.4)
         
+        # === VALIDATE FIRST on held-out queries ===
+        if self.qrels:
+            print("\n--- Validating on held-out queries FIRST ---")
+            val_results = {}
+            for qid in tqdm(self.val_qids, desc="Validation"):
+                query = self.queries[qid]
+                bm25_hits = self.searcher.search(query, k=initial_hits)
+                if not bm25_hits:
+                    val_results[qid] = []
+                    continue
+                pairs = []
+                doc_ids = []
+                for hit in bm25_hits:
+                    doc = self.searcher.doc(hit.docid)
+                    if doc:
+                        raw_content = doc.raw() if hasattr(doc, 'raw') else doc.contents()
+                        if raw_content:
+                            clean_content = self._extract_text_robust(raw_content)
+                            pairs.append([query, clean_content[:2000]])
+                            doc_ids.append(hit.docid)
+                if pairs:
+                    scores = cross_encoder.predict(pairs, batch_size=batch_size, show_progress_bar=False)
+                    doc_scores = sorted(zip(doc_ids, scores), key=lambda x: x[1], reverse=True)
+                    val_results[qid] = [(docid, float(score)) for docid, score in doc_scores]
+                else:
+                    val_results[qid] = [(hit.docid, hit.score) for hit in bm25_hits]
+            
+            val_map = self.compute_map(val_results)
+            print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
+            print("--- Now running on 199 test queries ---\n")
+        
+        # === NOW run on test queries ===
         results = {}
         
         for qid in tqdm(self.test_qids, desc="Neural Reranking"):
@@ -534,6 +580,41 @@ class ROBUST04Retriever:
         print(f"{'='*60}")
         print(f"RRF k parameter: {k}")
         
+        # === VALIDATE FIRST on held-out queries ===
+        if self.qrels:
+            print("\n--- Validating on held-out queries FIRST ---")
+            val_ranked_lists = []
+            
+            # Variant 1
+            self.searcher.set_bm25(0.9, 0.4)
+            val_v1 = {qid: [(h.docid, h.score) for h in self.searcher.search(self.queries[qid], k=1000)] for qid in self.val_qids}
+            val_ranked_lists.append(val_v1)
+            
+            # Variant 2
+            self.searcher.set_bm25(0.7, 0.65)
+            val_v2 = {qid: [(h.docid, h.score) for h in self.searcher.search(self.queries[qid], k=1000)] for qid in self.val_qids}
+            val_ranked_lists.append(val_v2)
+            
+            # Variant 3
+            self.searcher.set_bm25(0.7, 0.65)
+            self.searcher.set_rm3(70, 10, 0.25)
+            val_v3 = {qid: [(h.docid, h.score) for h in self.searcher.search(self.queries[qid], k=1000)] for qid in self.val_qids}
+            self.searcher.unset_rm3()
+            val_ranked_lists.append(val_v3)
+            
+            # Variant 4
+            self.searcher.set_bm25(0.9, 0.4)
+            self.searcher.set_rm3(10, 10, 0.5)
+            val_v4 = {qid: [(h.docid, h.score) for h in self.searcher.search(self.queries[qid], k=1000)] for qid in self.val_qids}
+            self.searcher.unset_rm3()
+            val_ranked_lists.append(val_v4)
+            
+            val_fused = self.reciprocal_rank_fusion(val_ranked_lists, k=k)
+            val_map = self.compute_map(val_fused)
+            print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
+            print("--- Now running on 199 test queries ---\n")
+        
+        # === NOW run on test queries ===
         ranked_lists = []
         
         # Variant 1: BM25 default (k1=0.9, b=0.4)
@@ -589,7 +670,8 @@ class ROBUST04Retriever:
     
     def tune_bm25_rm3_params(self):
         """
-        Grid search for optimal BM25 + RM3 parameters on training set
+        Grid search for optimal BM25 + RM3 parameters on training set (40 queries).
+        Validates on held-out validation set (10 queries) to detect overfitting.
         """
         if not self.qrels:
             print("No qrels available for tuning!")
@@ -598,6 +680,7 @@ class ROBUST04Retriever:
         print("\n" + "="*60)
         print("PARAMETER TUNING (BM25 + RM3)")
         print("="*60)
+        print(f"Training on {len(self.train_qids)} queries, validating on {len(self.val_qids)} queries")
         
         best_map = 0
         best_params = {}
@@ -621,7 +704,7 @@ class ROBUST04Retriever:
                                 self.searcher.set_bm25(k1, b)
                                 self.searcher.set_rm3(fb_terms, fb_docs, orig_weight)
                                 
-                                # Run on training queries
+                                # Run on training queries only (40)
                                 results = {}
                                 for qid in self.train_qids:
                                     hits = self.searcher.search(self.queries[qid], k=1000)
@@ -629,7 +712,7 @@ class ROBUST04Retriever:
                                 
                                 self.searcher.unset_rm3()
                                 
-                                # Compute MAP
+                                # Compute MAP on train
                                 map_score = self.compute_map(results)
                                 
                                 if map_score > best_map:
@@ -642,8 +725,27 @@ class ROBUST04Retriever:
                                 
                                 pbar.update(1)
         
-        print(f"\nBest MAP: {best_map:.4f}")
+        # Now validate using held-out validation set
+        print(f"\nBest Train MAP: {best_map:.4f}")
         print(f"Best params: {best_params}")
+        
+        # Compute validation MAP with best params
+        self.searcher.set_bm25(best_params['k1'], best_params['b'])
+        self.searcher.set_rm3(best_params['fb_terms'], best_params['fb_docs'], best_params['original_weight'])
+        val_results = {}
+        for qid in self.val_qids:
+            hits = self.searcher.search(self.queries[qid], k=1000)
+            val_results[qid] = [(hit.docid, hit.score) for hit in hits]
+        self.searcher.unset_rm3()
+        
+        val_map = self.compute_map(val_results)
+        print(f"Validation MAP (10 queries): {val_map:.4f}")
+        
+        if val_map < best_map * 0.8:
+            print("⚠ WARNING: Large drop on validation - possible overfitting!")
+        else:
+            print("✓ Validation performance is stable")
+        
         return best_params
     
     # ============================================================
