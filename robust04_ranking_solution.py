@@ -466,21 +466,24 @@ class ROBUST04Retriever:
         for qid in tqdm(self.test_qids, desc="Neural Reranking"):
             query = self.queries[qid]
             
-            # Stage 1: BM25 retrieval
-            bm25_hits = self.searcher.search(query, k=initial_hits)
+            # Stage 1: BM25 retrieval - get 1000 docs for full recall
+            all_bm25_hits = self.searcher.search(query, k=1000)
             
-            if not bm25_hits:
+            if not all_bm25_hits:
                 results[qid] = []
                 continue
             
-            # Prepare query-document pairs
+            # Only rerank top initial_hits (e.g., 100-200) for efficiency
+            rerank_hits = all_bm25_hits[:initial_hits]
+            remaining_hits = all_bm25_hits[initial_hits:]
+            
+            # Prepare query-document pairs for reranking
             pairs = []
             doc_ids = []
-            for hit in bm25_hits:
+            for hit in rerank_hits:
                 doc = self.searcher.doc(hit.docid)
                 if doc:
                     # CRITICAL: Use robust extraction for SGML documents
-                    # Raw content contains XML tags, null bytes, and metadata
                     raw_content = doc.raw() if hasattr(doc, 'raw') else doc.contents()
                     if raw_content:
                         clean_content = self._extract_text_robust(raw_content)
@@ -489,10 +492,11 @@ class ROBUST04Retriever:
                         doc_ids.append(hit.docid)
             
             if not pairs:
-                results[qid] = [(hit.docid, hit.score) for hit in bm25_hits]
+                # Fallback to BM25 scores
+                results[qid] = [(hit.docid, hit.score) for hit in all_bm25_hits[:final_hits]]
                 continue
             
-            # Stage 2: Cross-encoder reranking
+            # Stage 2: Cross-encoder reranking on top candidates
             try:
                 scores = cross_encoder.predict(pairs, batch_size=batch_size, show_progress_bar=False)
             except RuntimeError as e:
@@ -504,11 +508,25 @@ class ROBUST04Retriever:
                 else:
                     raise
             
-            # Combine and sort
-            doc_scores = list(zip(doc_ids, scores))
-            doc_scores.sort(key=lambda x: x[1], reverse=True)
+            # Combine reranked docs with remaining BM25 docs
+            reranked = list(zip(doc_ids, scores))
+            reranked.sort(key=lambda x: x[1], reverse=True)
             
-            results[qid] = [(docid, float(score)) for docid, score in doc_scores[:final_hits]]
+            # Get minimum neural score to ensure remaining docs are ranked lower
+            min_neural_score = min(scores) if len(scores) > 0 else 0
+            
+            # Build final results: reranked docs first, then remaining BM25 docs
+            final_results = [(docid, float(score)) for docid, score in reranked]
+            
+            # Add remaining BM25 docs with scores below min neural score
+            reranked_docids = set(doc_ids)
+            for i, hit in enumerate(remaining_hits):
+                if hit.docid not in reranked_docids:
+                    # Assign decreasing scores below min neural score
+                    adjusted_score = min_neural_score - 0.01 * (i + 1)
+                    final_results.append((hit.docid, adjusted_score))
+            
+            results[qid] = final_results[:final_hits]
             
             # Periodic GPU memory cleanup
             if self.device == 'cuda' and int(qid) % 50 == 0:
