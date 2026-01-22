@@ -34,9 +34,9 @@ The system is designed to run on consumer hardware with 8GB VRAM and produces ou
 
 | Run | Method | MAP | P@10 | NDCG@20 |
 |-----|--------|-----|------|--------|
-| **run_3** | **RRF Fusion (k=30, weights=[1.5, 1.0])** | **0.3144** ⭐ | 0.5095 | 0.4778 |
-| run_1 | BM25 + RM3 | 0.3006 | 0.4683 | 0.4385 |
-| run_2 | Neural Reranking (BGE-v2, Fast Mode) | 0.2714 | 0.4864 | 0.4542 |
+| **run_3** | **4-Way RRF Fusion** | **0.3309** ⭐ | 0.5181 | 0.4926 |
+| run_1 | BM25 + RM3 (Baseline) | 0.3006 | 0.4683 | 0.4385 |
+| run_2 | Neural Reranking (Fast Mode) | 0.2723 | 0.4995 | 0.4573 |
 
 ### Project Structure
 
@@ -389,7 +389,7 @@ We use **Weighted Reciprocal Rank Fusion** with a novel **Query-Dependent Weight
 ```
 RRF_score(d) = Σ [weight_r / (k + rank_r(d))]
 ```
-*   **k = 60**: Tuned constant.
+*   **k = 30**: Tuned constant (from validation).
 
 #### Innovation: Query-Length Adaptive Weighting
 
@@ -467,7 +467,7 @@ Actual performance on 199 test queries (evaluated with full ROBUST04 qrels):
 |-----|--------|-----|-----|------|-------------|---------|
 | **3** | **4-Way RRF Fusion** ⭐ | **0.3309** | **0.7714** | **0.5181** | **0.8116** | ~30 min |
 | 1 | BM25 + RM3 | 0.3006 | 0.6875 | 0.4683 | 0.7735 | ~12 sec |
-| 2 | Neural Reranking | 0.2723 | 0.6740 | 0.4995 | 0.7139 | ~27 min |
+| 2 | Neural Reranking (Fast Mode) | 0.2723 | 0.6740 | 0.4995 | 0.7139 | ~27 min |
 
 ### Key Observations
 1. **RRF Fusion is the clear winner** (+10% over BM25, +21% over Neural), proving that combining diverse signals (Lexical + Semantic + LLM) outperforms any single method.
