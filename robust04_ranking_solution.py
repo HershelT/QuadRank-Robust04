@@ -23,6 +23,7 @@ import argparse
 from collections import defaultdict
 from typing import List, Dict, Tuple, Optional
 import json
+import hashlib
 
 # Install required packages if not present
 def install_packages():
@@ -282,6 +283,91 @@ class ROBUST04Retriever:
                 combined = re.sub(r'(?<=\w) (?=\w)', '', combined)
         
         return combined
+
+    # ============================================================
+    # LLM QUERY EXPANSION (Query2Doc) - CACHE-ONLY MODE
+    # ============================================================
+    # NOTE: Run precompute_expansions.py first to generate the cache!
+    
+    EXPANSION_CACHE_FILE = "query_expansions.json"
+    
+    def _load_expansion_cache(self) -> Dict[str, str]:
+        """Load cached LLM expansions from disk"""
+        cache_file = os.path.join(self.output_dir, self.EXPANSION_CACHE_FILE)
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return {}
+    
+    def expand_queries_with_llm(self, qids: List[str]) -> Dict[str, str]:
+        """
+        Load LLM-expanded queries from cache (Query2Doc).
+        
+        IMPORTANT: Run precompute_expansions.py first to generate the cache!
+        This method is cache-only and will not make API calls.
+        """
+        cache = self._load_expansion_cache()
+        cache_file = os.path.join(self.output_dir, self.EXPANSION_CACHE_FILE)
+        
+        if not cache:
+            print(f"⚠ WARNING: No expansion cache found at {cache_file}")
+            print(f"  Run: python precompute_expansions.py --queries {self.queries_path} --output {self.output_dir}")
+            print(f"  Falling back to original queries (no LLM expansion)")
+            return {qid: self.queries[qid] for qid in qids}
+        
+        expanded = {}
+        missing = 0
+        
+        for qid in qids:
+            query = self.queries[qid]
+            cache_key = hashlib.md5(query.encode()).hexdigest()
+            
+            if cache_key in cache:
+                pseudo_doc = cache[cache_key]
+                expanded[qid] = f"{query} {pseudo_doc}"
+            else:
+                expanded[qid] = query
+                missing += 1
+        
+        if missing > 0:
+            print(f"⚠ WARNING: {missing}/{len(qids)} queries missing from cache")
+        else:
+            print(f"📁 Loaded all {len(qids)} expansions from cache")
+        
+        return expanded
+    
+    def run_bm25_query2doc(self, k1: float = 0.9, b: float = 0.4,
+                           fb_terms: int = 70, fb_docs: int = 10,
+                           original_weight: float = 0.3,
+                           hits: int = 1000) -> Dict[str, List[Tuple[str, float]]]:
+        """
+        Run BM25 + RM3 with LLM Query Expansion (Query2Doc)
+        
+        Combines Query2Doc (LLM pseudo-docs) with RM3 for enhanced retrieval.
+        Based on EMNLP 2023 paper showing +3-15% improvement over base BM25.
+        """
+        print(f"\n{'='*60}")
+        print("METHOD 1B: BM25 + Query2Doc + RM3")
+        print(f"{'='*60}")
+        print(f"Parameters: k1={k1}, b={b}, fb_terms={fb_terms}, original_weight={original_weight}")
+        
+        # Expand queries using LLM (cache-only)
+        print("\n--- Loading LLM-expanded queries ---")
+        all_qids = list(set(self.val_qids + self.test_qids))
+        expanded_queries = self.expand_queries_with_llm(all_qids)
+        
+        # Run on test queries
+        self.searcher.set_bm25(k1, b)
+        self.searcher.set_rm3(fb_terms, fb_docs, original_weight)
+        
+        results = {}
+        for qid in tqdm(self.test_qids, desc="BM25+Query2Doc+RM3"):
+            exp_query = expanded_queries.get(qid, self.queries[qid])
+            hits_list = self.searcher.search(exp_query, k=hits)
+            results[qid] = [(hit.docid, hit.score) for hit in hits_list]
+        
+        self.searcher.unset_rm3()
+        return results
 
     # ============================================================
     # METHOD 1: BM25 + RM3 (Query Expansion)
@@ -897,92 +983,84 @@ class ROBUST04Retriever:
         self._write_trec_run(results_1, "run_1", output_1)
         
         # ============================================================
-        # RUN 2: Neural Reranking (2025 SOTA models with fallback)
+        # RUN 1B: BM25 + Query2Doc + RM3 (LLM-Enhanced)
+        # ============================================================
+        results_1b = self.run_bm25_query2doc(
+            k1=best_params.get('k1', 0.7),
+            b=best_params.get('b', 0.65),
+            fb_terms=70,  # Research: 70-100 for news articles
+            fb_docs=10,
+            original_weight=0.3  # More aggressive expansion
+        )
+        output_1b = os.path.join(self.output_dir, "run_1b.res")
+        self._write_trec_run(results_1b, "run_1b", output_1b)
+        
+        # ============================================================
+        # RUN 1C: BM25-plain (No RM3, for diversity in fusion)
+        # ============================================================
+        print(f"\n{'='*60}")
+        print("METHOD 1C: BM25-plain (No Query Expansion)")
+        print(f"{'='*60}")
+        self.searcher.set_bm25(0.9, 0.4)
+        results_1c = {}
+        for qid in tqdm(self.test_qids, desc="BM25-plain"):
+            hits = self.searcher.search(self.queries[qid], k=1000)
+            results_1c[qid] = [(hit.docid, hit.score) for hit in hits]
+        output_1c = os.path.join(self.output_dir, "run_1c.res")
+        self._write_trec_run(results_1c, "run_1c", output_1c)
+        
+        # ============================================================
+        # RUN 2: Neural Reranking (FAST MODE - no MaxP chunking)
         # ============================================================
         results_2 = self.run_neural_reranking(
-            model_name='auto',  # Will try: BGE-v2 → Qwen3 → BGE-large → MiniLM
-            initial_hits=250,   # Increased from 150 for better recall
+            model_name='auto',
+            initial_hits=250,
             batch_size=32
         )
         output_2 = os.path.join(self.output_dir, "run_2.res")
         self._write_trec_run(results_2, "run_2", output_2)
         
         # ============================================================
-        # RUN 3: RRF Fusion of Neural + BM25+RM3 (Best of Both Worlds)
+        # RUN 3: 4-WAY RRF Fusion with Query-Dependent Weights
         # ============================================================
         print(f"\n{'='*60}")
-        print("METHOD 3: RRF Fusion (Neural + BM25+RM3)")
+        print("METHOD 3: 4-Way RRF Fusion with Query-Dependent Weights")
         print(f"{'='*60}")
         
-        # --- Tune RRF parameters on validation set ---
-        if self.qrels and self.val_results_bm25 and self.val_results_neural:
-            print("\n--- Tuning RRF parameters on validation set (using cached results) ---")
-            # Grid of parameters to try
-            k_values = [30, 40, 60, 80]
-            # Weights: [BM25+RM3 weight, Neural weight]
-            weight_configs = [
-                [1.0, 1.0],   # Equal
-                [1.2, 1.0],   # Slightly favor BM25
-                [1.5, 1.0],   # Favor BM25 more
-                [1.0, 0.8],   # Slightly penalize Neural
-                [1.2, 0.8],   # Favor BM25 + penalize Neural
-                [1.5, 0.8],   # Strongly favor BM25
+        # Load best_k from cache or use default
+        best_k = best_params.get('rrf_k', 30)
+        
+        def get_query_weights(query: str) -> list:
+            """Query-dependent weighting: Short→BM25, Long→Neural"""
+            word_count = len(query.split())
+            if word_count <= 3:
+                # Short query: favor BM25/lexical
+                return [1.5, 1.3, 1.2, 0.7]  # [BM25+RM3, Query2Doc, BM25-plain, Neural]
+            elif word_count <= 5:
+                # Medium query: balanced
+                return [1.3, 1.2, 1.0, 1.0]
+            else:
+                # Long query: favor Neural/semantic
+                return [1.0, 1.0, 0.8, 1.5]
+        
+        # Fuse per-query with adaptive weights
+        results_3 = {}
+        for qid in tqdm(self.test_qids, desc="4-way RRF Fusion"):
+            query = self.queries[qid]
+            weights = get_query_weights(query)
+            
+            rankings = [
+                {qid: results_1.get(qid, [])},
+                {qid: results_1b.get(qid, [])},
+                {qid: results_1c.get(qid, [])},
+                {qid: results_2.get(qid, [])}
             ]
             
-            # Use cached validation results
-            val_results_1 = self.val_results_bm25
-            val_results_2 = self.val_results_neural
-            
-            best_val_map = 0
-            best_k = 60
-            best_weights = [1.0, 1.0]
-            
-            for k in k_values:
-                for weights in weight_configs:
-                    # Fuse validation results
-                    val_fused = self.weighted_reciprocal_rank_fusion(
-                        [val_results_1, val_results_2], k=k, weights=weights
-                    )
-                    val_map = self.compute_map(val_fused)
-                    print(f"  k={k}, weights={weights} → MAP: {val_map:.4f}")
-                    
-                    if val_map > best_val_map:
-                        best_val_map = val_map
-                        best_k = k
-                        best_weights = weights
-            
-            print(f"\n✓ Best: k={best_k}, weights={best_weights} → VAL MAP: {best_val_map:.4f}")
-            
-            # Save RRF params to cache
-            if os.path.exists(params_cache_file):
-                with open(params_cache_file, 'r') as f:
-                    cached = json.load(f)
-            else:
-                cached = {}
-            cached['rrf_k'] = best_k
-            cached['rrf_weights'] = best_weights
-            with open(params_cache_file, 'w') as f:
-                json.dump(cached, f, indent=2)
-            print(f"💾 Saved RRF params to {params_cache_file}")
-            print("--- Now running on 199 test queries with best params ---\n")
-        else:
-            # Try to load from cache, otherwise use optimal defaults
-            if os.path.exists(params_cache_file):
-                with open(params_cache_file, 'r') as f:
-                    cached = json.load(f)
-                best_k = cached.get('rrf_k', 30)
-                best_weights = cached.get('rrf_weights', [1.5, 0.8])
-                print(f"📁 Loaded RRF params from cache: k={best_k}, weights={best_weights}")
-            else:
-                # Optimal defaults from validation tuning (run_validation_on_50.py)
-                best_k = 30
-                best_weights = [1.5, 0.8]  # [BM25 weight, Neural weight]
+            fused = self.weighted_reciprocal_rank_fusion(rankings, k=best_k, weights=weights)
+            results_3[qid] = fused.get(qid, [])
         
-        # Fuse Neural (run_2) with BM25+RM3 (run_1) using weighted RRF
-        results_3 = self.weighted_reciprocal_rank_fusion(
-            [results_1, results_2], k=best_k, weights=best_weights
-        )
-        print(f"✓ Fused Neural + BM25+RM3 (k={best_k}, weights={best_weights})")
+        print(f"✓ Fused 4-way: BM25+RM3 + Query2Doc + BM25-plain + Neural (k={best_k})")
+        print(f"  Query-dependent weights: Short→BM25, Long→Neural")
         
         output_3 = os.path.join(self.output_dir, "run_3.res")
         self._write_trec_run(results_3, "run_3", output_3)
@@ -991,13 +1069,17 @@ class ROBUST04Retriever:
         print("COMPLETION SUMMARY")
         print("="*80)
         print(f"\nGenerated files:")
-        print(f"  1. {output_1} - BM25 + RM3 (Query Expansion)")
-        print(f"  2. {output_2} - Neural Reranking (Cross-Encoder)")
-        print(f"  3. {output_3} - RRF Fusion (k={best_k}, w={best_weights}) ⭐ BEST")
+        print(f"  1.  {output_1} - BM25 + RM3")
+        print(f"  1b. {output_1b} - BM25 + Query2Doc + RM3")
+        print(f"  1c. {output_1c} - BM25-plain")
+        print(f"  2.  {output_2} - Neural Reranking (FAST, no MaxP)")
+        print(f"  3.  {output_3} - 4-way RRF Fusion ⭐ BEST")
         print("\nReady for submission!")
         
         return {
             'run_1': results_1,
+            'run_1b': results_1b,
+            'run_1c': results_1c,
             'run_2': results_2,
             'run_3': results_3
         }
