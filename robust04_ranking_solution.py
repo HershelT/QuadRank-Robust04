@@ -318,12 +318,13 @@ class ROBUST04Retriever:
         expanded = {}
         missing = 0
         
+        
         for qid in qids:
             query = self.queries[qid]
-            cache_key = hashlib.md5(query.encode()).hexdigest()
             
-            if cache_key in cache:
-                pseudo_doc = cache[cache_key]
+            # Use QID as cache key (simpler than hash)
+            if qid in cache:
+                pseudo_doc = cache[qid]
                 expanded[qid] = f"{query} {pseudo_doc}"
             else:
                 expanded[qid] = query
