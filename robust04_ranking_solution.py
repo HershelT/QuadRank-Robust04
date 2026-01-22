@@ -294,117 +294,57 @@ class ROBUST04Retriever:
         return combined
 
     # ============================================================
-    # LLM QUERY EXPANSION (Query2Doc)
+    # LLM QUERY EXPANSION (Query2Doc) - CACHE-ONLY MODE
     # ============================================================
+    # NOTE: Run precompute_expansions.py first to generate the cache!
     
-    # Query2Doc prompt template (based on EMNLP 2023 paper)
-    QUERY2DOC_PROMPT = """Write a short passage (100-150 words) that would be relevant to answer this question. The passage should contain facts and information that directly address the query.
-
-Query: {query}
-
-Relevant passage:"""
-    
-    def _init_gemini_client(self):
-        """Initialize Gemini API client lazily"""
-        if hasattr(self, '_gemini_model') and self._gemini_model:
-            return self._gemini_model
-        
-        try:
-            import google.generativeai as genai
-            api_key = os.environ.get('GEMINI_API_KEY')
-            if not api_key:
-                print("⚠ GEMINI_API_KEY not found in environment")
-                return None
-            genai.configure(api_key=api_key)
-            self._gemini_model = genai.GenerativeModel('gemini-flash-latest')
-            print("✓ Gemini API initialized (gemini-flash-latest)")
-            return self._gemini_model
-        except Exception as e:
-            print(f"⚠ Failed to initialize Gemini API: {e}")
-            return None
+    EXPANSION_CACHE_FILE = "query_expansions.json"
     
     def _load_expansion_cache(self) -> Dict[str, str]:
         """Load cached LLM expansions from disk"""
-        cache_file = os.path.join(self.output_dir, "query_expansions.json")
+        cache_file = os.path.join(self.output_dir, self.EXPANSION_CACHE_FILE)
         if os.path.exists(cache_file):
             with open(cache_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         return {}
     
-    def _save_expansion_cache(self, cache: Dict[str, str]):
-        """Save LLM expansions to disk"""
-        cache_file = os.path.join(self.output_dir, "query_expansions.json")
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(cache, f, indent=2, ensure_ascii=False)
-    
-    def get_llm_expansion(self, query: str) -> str:
-        """
-        Get LLM-generated pseudo-document for query expansion (Query2Doc).
-        Results are cached to avoid redundant API calls.
-        
-        Args:
-            query: Original query text
-            
-        Returns:
-            Pseudo-document text (or empty string if API fails)
-        """
-        # Create cache key from query hash
-        cache_key = hashlib.md5(query.encode()).hexdigest()
-        
-        # Check cache first
-        cache = self._load_expansion_cache()
-        if cache_key in cache:
-            return cache[cache_key]
-        
-        # Initialize Gemini client
-        model = self._init_gemini_client()
-        if not model:
-            return ""
-        
-        try:
-            prompt = self.QUERY2DOC_PROMPT.format(query=query)
-            response = model.generate_content(prompt)
-            expansion = response.text.strip()
-            
-            # Limit expansion length to prevent over-expansion
-            if len(expansion) > 500:
-                expansion = expansion[:500]
-            
-            # Save to cache
-            cache[cache_key] = expansion
-            self._save_expansion_cache(cache)
-            
-            return expansion
-        except Exception as e:
-            print(f"⚠ LLM expansion failed for query '{query[:30]}...': {e}")
-            return ""
-    
     def expand_queries_with_llm(self, qids: List[str]) -> Dict[str, str]:
         """
-        Batch expand all queries using LLM (with caching).
+        Load LLM-expanded queries from cache (Query2Doc).
+        
+        IMPORTANT: Run precompute_expansions.py first to generate the cache!
+        This method is cache-only and will not make API calls.
         
         Returns:
             Dict mapping qid -> expanded query (original + pseudo-doc)
         """
         cache = self._load_expansion_cache()
-        expanded = {}
-        new_expansions = 0
+        cache_file = os.path.join(self.output_dir, self.EXPANSION_CACHE_FILE)
         
-        for qid in tqdm(qids, desc="LLM Expansion"):
+        if not cache:
+            print(f"⚠ WARNING: No expansion cache found at {cache_file}")
+            print(f"  Run: python precompute_expansions.py --queries {self.queries_path} --output {self.output_dir}")
+            print(f"  Falling back to original queries (no LLM expansion)")
+            return {qid: self.queries[qid] for qid in qids}
+        
+        expanded = {}
+        missing = 0
+        
+        for qid in qids:
             query = self.queries[qid]
             cache_key = hashlib.md5(query.encode()).hexdigest()
             
             if cache_key in cache:
                 pseudo_doc = cache[cache_key]
+                expanded[qid] = f"{query} {pseudo_doc}"
             else:
-                pseudo_doc = self.get_llm_expansion(query)
-                new_expansions += 1
-            
-            # Combine original query with pseudo-document
-            expanded[qid] = f"{query} {pseudo_doc}"
+                # Fallback to original query if not in cache
+                expanded[qid] = query
+                missing += 1
         
-        if new_expansions > 0:
-            print(f"💾 Generated {new_expansions} new LLM expansions (cached)")
+        if missing > 0:
+            print(f"⚠ WARNING: {missing}/{len(qids)} queries missing from cache")
+            print(f"  Run: python precompute_expansions.py --queries {self.queries_path}")
         else:
             print(f"📁 Loaded all {len(qids)} expansions from cache")
         
