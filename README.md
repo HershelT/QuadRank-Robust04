@@ -531,7 +531,7 @@ def run_v1_baseline():
 - This pseudo-document is concatenated with the query for retrieval.
 **Result**:
 - Successfully bridges the semantic gap between query terms and document vocabulary.
-- **Implementation Note**: Fixed a critical cache key issue by switching from MD5 hashes to Query IDs, enabling reliable expansion retrieval.
+- **Implementation Note**: implemented **MD5 Hash-based Deduplication** to ensure that identical queries appearing multiple times in the dataset share the same expansion, saving API costs and ensuring consistency.
 
 ### Phase 4: The Fusion "Super-Ensemble" (Success)
 **Goal**: Leverage the complementary strengths of individual methods.
