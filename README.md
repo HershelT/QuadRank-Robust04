@@ -442,57 +442,56 @@ Actual performance on 199 test queries (evaluated with full ROBUST04 qrels):
 ---
 
 ## The Journey: From Baseline to SOTA (MAP 0.3309)
-*A summary of our development process for the class presentation.*
+*A summary of the development process.*
 
 ### Phase 1: The "Kitchen Sink" & The MaxP Trap (Fail)
 **Goal**: Implement a "perfect" Neural Reranker.
-**Action**: We implemented a state-of-the-art Cross-Encoder (`BGE-Reranker`) with **MaxP Chunking**.
+**Action**: We implemented a state-of-the-art Cross-Encoder (BGE-Reranker) with **MaxP Chunking**.
 - MaxP splits long documents into overlapping 512-token chunks (e.g., 4 chunks per doc).
 - We scored *every* chunk to find the best passage.
 **Result**: 
 - **Performance**: Good P@10 (0.49), but MAP was average (0.27).
-- **Failure**: Runtime was **catastrophic** (~1 hour 45 minutes for just 199 queries).
-- **Lesson**: "Perfect" is the enemy of "Done." MaxP is too slow for rapid iteration.
+- **Failure**: Runtime was approximately 1 hour 45 minutes for just 199 queries.
+- **Lesson**: Computational complexity must be balanced with iterative capability.
 
 ### Phase 2: The Efficiency Pivot ("Fast Mode")
 **Goal**: Drastically reduce runtime to allow for experimentation.
 **Action**: 
-- We removed MaxP chunking.
-- Instead, we **truncated documents to the first 512 tokens** (Title + Lead Paragraph).
-- This aligns with the "Inverted Pyramid" of journalism (most info is at the start).
+- Removed MaxP chunking.
+- Implemented **First-512 Truncation** (Title + Lead Paragraph).
+- This aligns with the "Inverted Pyramid" structure common in newswire text.
 **Result**:
-- **Runtime**: Dropped from **105 mins** → **27 mins** (4x faster!). ⚡
-- **Trade-off**: MAP stayed roughly the same (0.27), proving that for ranking, the lead paragraph is usually sufficient.
+- **Runtime**: Reduced from 105 minutes to 27 minutes (4x improvement).
+- **Trade-off**: MAP remained stable (0.27), validating the truncation strategy.
 
 ### Phase 3: The Data Augmentation Breakthrough (Query2Doc)
-**Goal**: Fix the "Vocabulary Mismatch" problem (Query says "bad weather", Doc says "cyclone").
+**Goal**: Address the "Vocabulary Mismatch" problem (e.g., Query: "bad weather", Doc: "cyclone").
 **Action**: 
-- We introduced **LLM Augmentation** using Gemini-Flash.
-- For every query, we asked the LLM to "hallucinate" a perfect fake document.
-- We appended this fake document to the query for BM25 retrieval.
+- Implemented **LLM Augmentation** using Gemini-Flash.
+- For every query, the system generates a pseudo-document containing predicted relevant terms.
+- This pseudo-document is concatenated with the query for retrieval.
 **Result**:
-- This bridges terms like "bad weather" to "cyclone" automatically.
-- **Challenge**: Initially, our cache keys were broken (MD5 hashing issues), leading to empty results.
-- **Fix**: We rewrote the caching logic to use simple Query IDs, instantly unlocking 249 cached expansions.
+- Successfully bridges the semantic gap between query terms and document vocabulary.
+- **Implementation Note**: Fixed a critical cache key issue by switching from MD5 hashes to Query IDs, enabling reliable expansion retrieval.
 
 ### Phase 4: The Fusion "Super-Ensemble" (Success)
-**Goal**: How do we beat the individual methods?
-**Action**: We realized each method had a unique superpower:
-1. **BM25+RM3**: Finds *everything* (High Recall: 0.77).
-2. **Neural**: Ranks *correctly* (High Precision: 0.50).
-3. **Query2Doc**: Understands *context*.
+**Goal**: Leverage the complementary strengths of individual methods.
+**Action**: Analyzed individual method performance:
+1. **BM25+RM3**: High Recall (0.77).
+2. **Neural**: High Precision (0.50).
+3. **Query2Doc**: Contextual understanding.
 
-We built a **4-Way Weighted RRF Fusion**:
+Implemented a **4-Way Weighted Reciprocal Rank Fusion (RRF)**:
 - **Inputs**: (1) BM25+RM3, (2) BM25+Query2Doc, (3) BM25-Plain, (4) Neural.
 - **Innovation**: **Query-Dependent Weighting**.
-   - If query is **short** (<3 words) → Trust BM25 (keyword match).
-   - If query is **long** (>5 words) → Trust Neural (semantic meaning).
+   - Short queries (<3 words): Higher weight to BM25 (keyword match).
+   - Long queries (>5 words): Higher weight to Neural (semantic meaning).
 
-### 🏆 Final Victory
+### Final Performance
 - **Baseline (BM25)**: MAP 0.3006
 - **Neural Only**: MAP 0.2723
-- **Our Fusion**: **MAP 0.3309 (+10%)** 🚀
-- **MRR**: **0.7714** (Incredible top-rank performance)
+- **Fusion (Method 3)**: **MAP 0.3309** (+10% relative improvement)
+- **MRR**: **0.7714**
 
 ---
 
