@@ -20,9 +20,17 @@ import sys
 import time
 import re
 import argparse
+import hashlib
 from collections import defaultdict
 from typing import List, Dict, Tuple, Optional
 import json
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not required if env vars set directly
 
 # Install required packages if not present
 def install_packages():
@@ -35,6 +43,8 @@ def install_packages():
         'tqdm',
         'numpy',
         'FlagEmbedding',  # For BGE reranker models
+        'google-generativeai',  # For Gemini API (Query2Doc)
+        'python-dotenv',  # For loading .env file
     ]
     import subprocess
     for pkg in packages:
@@ -284,6 +294,123 @@ class ROBUST04Retriever:
         return combined
 
     # ============================================================
+    # LLM QUERY EXPANSION (Query2Doc)
+    # ============================================================
+    
+    # Query2Doc prompt template (based on EMNLP 2023 paper)
+    QUERY2DOC_PROMPT = """Write a short passage (100-150 words) that would be relevant to answer this question. The passage should contain facts and information that directly address the query.
+
+Query: {query}
+
+Relevant passage:"""
+    
+    def _init_gemini_client(self):
+        """Initialize Gemini API client lazily"""
+        if hasattr(self, '_gemini_model') and self._gemini_model:
+            return self._gemini_model
+        
+        try:
+            import google.generativeai as genai
+            api_key = os.environ.get('GEMINI_API_KEY')
+            if not api_key:
+                print("⚠ GEMINI_API_KEY not found in environment")
+                return None
+            genai.configure(api_key=api_key)
+            self._gemini_model = genai.GenerativeModel('gemini-flash-latest')
+            print("✓ Gemini API initialized (gemini-flash-latest)")
+            return self._gemini_model
+        except Exception as e:
+            print(f"⚠ Failed to initialize Gemini API: {e}")
+            return None
+    
+    def _load_expansion_cache(self) -> Dict[str, str]:
+        """Load cached LLM expansions from disk"""
+        cache_file = os.path.join(self.output_dir, "query_expansions.json")
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return {}
+    
+    def _save_expansion_cache(self, cache: Dict[str, str]):
+        """Save LLM expansions to disk"""
+        cache_file = os.path.join(self.output_dir, "query_expansions.json")
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, indent=2, ensure_ascii=False)
+    
+    def get_llm_expansion(self, query: str) -> str:
+        """
+        Get LLM-generated pseudo-document for query expansion (Query2Doc).
+        Results are cached to avoid redundant API calls.
+        
+        Args:
+            query: Original query text
+            
+        Returns:
+            Pseudo-document text (or empty string if API fails)
+        """
+        # Create cache key from query hash
+        cache_key = hashlib.md5(query.encode()).hexdigest()
+        
+        # Check cache first
+        cache = self._load_expansion_cache()
+        if cache_key in cache:
+            return cache[cache_key]
+        
+        # Initialize Gemini client
+        model = self._init_gemini_client()
+        if not model:
+            return ""
+        
+        try:
+            prompt = self.QUERY2DOC_PROMPT.format(query=query)
+            response = model.generate_content(prompt)
+            expansion = response.text.strip()
+            
+            # Limit expansion length to prevent over-expansion
+            if len(expansion) > 500:
+                expansion = expansion[:500]
+            
+            # Save to cache
+            cache[cache_key] = expansion
+            self._save_expansion_cache(cache)
+            
+            return expansion
+        except Exception as e:
+            print(f"⚠ LLM expansion failed for query '{query[:30]}...': {e}")
+            return ""
+    
+    def expand_queries_with_llm(self, qids: List[str]) -> Dict[str, str]:
+        """
+        Batch expand all queries using LLM (with caching).
+        
+        Returns:
+            Dict mapping qid -> expanded query (original + pseudo-doc)
+        """
+        cache = self._load_expansion_cache()
+        expanded = {}
+        new_expansions = 0
+        
+        for qid in tqdm(qids, desc="LLM Expansion"):
+            query = self.queries[qid]
+            cache_key = hashlib.md5(query.encode()).hexdigest()
+            
+            if cache_key in cache:
+                pseudo_doc = cache[cache_key]
+            else:
+                pseudo_doc = self.get_llm_expansion(query)
+                new_expansions += 1
+            
+            # Combine original query with pseudo-document
+            expanded[qid] = f"{query} {pseudo_doc}"
+        
+        if new_expansions > 0:
+            print(f"💾 Generated {new_expansions} new LLM expansions (cached)")
+        else:
+            print(f"📁 Loaded all {len(qids)} expansions from cache")
+        
+        return expanded
+
+    # ============================================================
     # METHOD 1: BM25 + RM3 (Query Expansion)
     # ============================================================
     
@@ -363,6 +490,85 @@ class ROBUST04Retriever:
         for qid in tqdm(self.test_qids, desc="BM25+RM3"):
             query = self.queries[qid]
             hits_list = self.searcher.search(query, k=hits)
+            results[qid] = [(hit.docid, hit.score) for hit in hits_list]
+        
+        self.searcher.unset_rm3()
+        
+        return results
+    
+    def run_bm25_query2doc(self, k1: float = 0.9, b: float = 0.4,
+                           fb_terms: int = 70, fb_docs: int = 10,
+                           original_weight: float = 0.3,
+                           hits: int = 1000) -> Dict[str, List[Tuple[str, float]]]:
+        """
+        Run BM25 + RM3 with LLM Query Expansion (Query2Doc)
+        
+        This combines two query expansion techniques:
+        1. Query2Doc: LLM generates pseudo-documents that are concatenated with query
+        2. RM3: Traditional pseudo-relevance feedback on expanded query
+        
+        Based on EMNLP 2023 paper showing +3-15% improvement over base BM25.
+        
+        Args:
+            k1: BM25 k1 parameter
+            b: BM25 b parameter  
+            fb_terms: RM3 expansion terms (higher=more aggressive, research suggests 70-100)
+            fb_docs: RM3 feedback documents
+            original_weight: Weight of original query vs expansion (lower=more expansion)
+            hits: Number of documents to retrieve
+        """
+        print(f"\n{'='*60}")
+        print("METHOD 1B: BM25 + Query2Doc + RM3")
+        print(f"{'='*60}")
+        print(f"Using LLM-expanded queries with RM3")
+        print(f"Parameters: k1={k1}, b={b}, fb_terms={fb_terms}, original_weight={original_weight}")
+        
+        # Expand queries using LLM (with caching)
+        print("\n--- Expanding queries with LLM ---")
+        all_qids = list(set(self.val_qids + self.test_qids))
+        expanded_queries = self.expand_queries_with_llm(all_qids)
+        
+        # === VALIDATE FIRST on held-out queries ===
+        if self.qrels:
+            print("\n--- Validating on held-out queries FIRST ---")
+            
+            val_cache_file = os.path.join(self.output_dir, "val_results_bm25_q2d.json")
+            if os.path.exists(val_cache_file):
+                print(f"📁 Loading cached Query2Doc validation results from {val_cache_file}")
+                with open(val_cache_file, 'r') as f:
+                    self.val_results_bm25_q2d = json.load(f)
+                val_map = self.compute_map(self.val_results_bm25_q2d)
+                print(f"✓ Validation MAP (Query2Doc): {val_map:.4f}")
+            else:
+                self.searcher.set_bm25(k1, b)
+                self.searcher.set_rm3(fb_terms, fb_docs, original_weight)
+                
+                val_results = {}
+                for qid in tqdm(self.val_qids, desc="Validating Q2D"):
+                    exp_query = expanded_queries.get(qid, self.queries[qid])
+                    hits_list = self.searcher.search(exp_query, k=hits)
+                    val_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
+                
+                self.searcher.unset_rm3()
+                
+                val_map = self.compute_map(val_results)
+                print(f"✓ Validation MAP (Query2Doc): {val_map:.4f}")
+                
+                self.val_results_bm25_q2d = val_results
+                with open(val_cache_file, 'w') as f:
+                    json.dump(val_results, f)
+                print(f"💾 Saved Query2Doc validation results to {val_cache_file}")
+            
+            print("--- Now running on 199 test queries ---\n")
+        
+        # === NOW run on test queries ===
+        self.searcher.set_bm25(k1, b)
+        self.searcher.set_rm3(fb_terms, fb_docs, original_weight)
+        
+        results = {}
+        for qid in tqdm(self.test_qids, desc="BM25+Query2Doc+RM3"):
+            exp_query = expanded_queries.get(qid, self.queries[qid])
+            hits_list = self.searcher.search(exp_query, k=hits)
             results[qid] = [(hit.docid, hit.score) for hit in hits_list]
         
         self.searcher.unset_rm3()
@@ -1042,6 +1248,21 @@ class ROBUST04Retriever:
         self._write_trec_run(results_1, "run_1", output_1)
         
         # ============================================================
+        # RUN 1B: BM25 + Query2Doc + RM3 (LLM-Enhanced)
+        # ============================================================
+        # Per research 1.1: Query2Doc adds +3-15% over base BM25
+        # Per research 1.4: fb_terms=70, original_weight=0.3 for news articles
+        results_1b = self.run_bm25_query2doc(
+            k1=best_params.get('k1', 0.7),
+            b=best_params.get('b', 0.65),
+            fb_terms=70,  # Research: 70-100 for news articles
+            fb_docs=10,
+            original_weight=0.3  # More aggressive expansion
+        )
+        output_1b = os.path.join(self.output_dir, "run_1b.res")
+        self._write_trec_run(results_1b, "run_1b", output_1b)
+        
+        # ============================================================
         # RUN 2: Neural Reranking (2025 SOTA models with fallback)
         # ============================================================
         results_2 = self.run_neural_reranking(
@@ -1053,10 +1274,11 @@ class ROBUST04Retriever:
         self._write_trec_run(results_2, "run_2", output_2)
         
         # ============================================================
-        # RUN 3: RRF Fusion of Neural + BM25+RM3 (Best of Both Worlds)
+        # RUN 3: RRF Fusion (3-way: BM25+RM3, Query2Doc, Neural)
         # ============================================================
+        # Per research 3.1: 4-ranker fusion beats 2-ranker by 1-2%
         print(f"\n{'='*60}")
-        print("METHOD 3: RRF Fusion (Neural + BM25+RM3)")
+        print("METHOD 3: RRF Fusion (BM25+RM3 + Query2Doc + Neural)")
         print(f"{'='*60}")
         
         # --- Tune RRF parameters on validation set ---
@@ -1123,11 +1345,15 @@ class ROBUST04Retriever:
                 best_k = 30
                 best_weights = [1.5, 0.8]  # [BM25 weight, Neural weight]
         
-        # Fuse Neural (run_2) with BM25+RM3 (run_1) using weighted RRF
+        # Fuse 3-way: BM25+RM3 + Query2Doc + Neural using weighted RRF
+        # Per research 3.1: multi-ranker fusion beats 2-ranker by 1-2%
+        # Weights: [BM25+RM3, Query2Doc, Neural]
         results_3 = self.weighted_reciprocal_rank_fusion(
-            [results_1, results_2], k=best_k, weights=best_weights
+            [results_1, results_1b, results_2], 
+            k=best_k, 
+            weights=[best_weights[0], best_weights[0], best_weights[1] if len(best_weights) > 1 else 0.8]
         )
-        print(f"✓ Fused Neural + BM25+RM3 (k={best_k}, weights={best_weights})")
+        print(f"✓ Fused 3-way: BM25+RM3 + Query2Doc + Neural (k={best_k})")
         
         output_3 = os.path.join(self.output_dir, "run_3.res")
         self._write_trec_run(results_3, "run_3", output_3)
@@ -1136,13 +1362,15 @@ class ROBUST04Retriever:
         print("COMPLETION SUMMARY")
         print("="*80)
         print(f"\nGenerated files:")
-        print(f"  1. {output_1} - BM25 + RM3 (Query Expansion)")
-        print(f"  2. {output_2} - Neural Reranking (Cross-Encoder)")
-        print(f"  3. {output_3} - RRF Fusion (k={best_k}, w={best_weights}) ⭐ BEST")
+        print(f"  1.  {output_1} - BM25 + RM3 (Query Expansion)")
+        print(f"  1b. {output_1b} - BM25 + Query2Doc + RM3 (LLM-Enhanced)")
+        print(f"  2.  {output_2} - Neural Reranking (MaxP Cross-Encoder)")
+        print(f"  3.  {output_3} - 3-way RRF Fusion ⭐ BEST")
         print("\nReady for submission!")
         
         return {
             'run_1': results_1,
+            'run_1b': results_1b,
             'run_2': results_2,
             'run_3': results_3
         }
