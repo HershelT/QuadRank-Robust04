@@ -635,6 +635,12 @@ pip install pyserini torch transformers>=4.51.0 sentence-transformers>=2.7.0 tqd
 
 5. Qwen Team. (2025). Qwen3 Embedding: Advancing Text Embedding and Reranking Through Foundation Models.
 
+6. Wang, L., Yang, N., & Wei, F. (2023). Query2doc: Query Expansion with Large Language Models. *EMNLP 2023*. (Method 1b)
+
+7. Xiao, S., et al. (2023). C-Pack: Packaged Resources To Advance General Chinese Embedding. *arXiv:2309.07597*. (BGE Reranker)
+
+8. Lin, J., et al. (2021). Pyserini: A Python Toolkit for Reproducible Information Retrieval Research. *SIGIR '21*.
+
 ### Software
 
 - [Pyserini](https://github.com/castorini/pyserini) - Python toolkit for reproducible IR research
@@ -654,5 +660,6 @@ This project is developed for academic purposes as part of the Text Retrieval an
 
 ## Author
 
+**Hershel Thomas**  
 Text Retrieval Course - Ranking Competition Submission  
 January 2026
