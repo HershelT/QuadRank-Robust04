@@ -34,9 +34,9 @@ The system is designed to run on consumer hardware with 8GB VRAM and produces ou
 
 | Run | Method | MAP | P@10 | NDCG@20 |
 |-----|--------|-----|------|--------|
-| **run_3** | **RRF Fusion (k=30, weights=[1.5, 0.8])** | **0.3111** ⭐ | 0.4935 | 0.4699 |
+| **run_3** | **RRF Fusion (k=30, weights=[1.5, 1.0])** | **0.3144** ⭐ | 0.5095 | 0.4778 |
 | run_1 | BM25 + RM3 | 0.3006 | 0.4683 | 0.4385 |
-| run_2 | Neural Reranking (BGE-v2) | 0.2711 | 0.5010 | 0.4583 |
+| run_2 | Neural Reranking (BGE-v2, MaxP) | 0.2714 | 0.4864 | 0.4542 |
 
 ### Project Structure
 
@@ -287,14 +287,25 @@ k1=0.7, b=0.4, fb_terms=50, fb_docs=5, original_weight=0.5
 
 #### Description
 
-Two-stage retrieval combining efficient first-stage retrieval with precise neural reranking. A cross-encoder processes query-document pairs jointly, enabling deep semantic understanding that keyword-based methods cannot achieve.
+Two-stage retrieval combining efficient first-stage retrieval with precise neural reranking using the **MaxP (Max Passage) strategy** to handle long documents. A cross-encoder processes query-document pairs jointly, enabling deep semantic understanding that keyword-based methods cannot achieve.
+
+#### MaxP (Max Passage) Strategy
+
+ROBUST04 documents are news articles averaging 500-2000 words, but cross-encoder models typically have a 512-token context limit. MaxP handles this by:
+
+1. Splitting each document into overlapping chunks (1500 chars with 500 char overlap)
+2. Scoring each chunk independently with the cross-encoder
+3. Taking the **maximum chunk score** as the document's relevance score
+
+This ensures relevant passages within long documents are not truncated and lost.
 
 #### Algorithm
 
-1. **Stage 1 (Retrieval)**: BM25 retrieves top-1000 candidate documents
-2. **Stage 2 (Reranking)**: Cross-encoder reranks top-150 documents
-3. **Stage 3 (Merge)**: Reranked documents are merged with remaining BM25 results
-4. Final ranking: top-150 reranked + remaining BM25 docs (preserving recall)
+1. **Stage 1 (Retrieval)**: BM25 retrieves top-250 candidate documents
+2. **Stage 2 (Chunking)**: Each document is split into overlapping 512-token chunks (max 4 chunks per doc)
+3. **Stage 3 (Scoring)**: Cross-encoder scores all query-chunk pairs
+4. **Stage 4 (Aggregation)**: MaxP aggregation: document score = max(chunk scores)
+5. **Stage 5 (Merge)**: Reranked documents merged with remaining BM25 results for full recall
 
 #### Cross-Encoder Architecture
 
@@ -384,7 +395,7 @@ Where:
 - Combines semantic understanding with keyword matching
 - Weighted fusion favors the stronger ranker (BM25)
 - No score normalization required
-- Achieves highest MAP (**0.3111**)
+- Achieves highest MAP (**0.3144**)
 
 ---
 
@@ -414,9 +425,9 @@ Actual performance on 199 test queries (evaluated with full ROBUST04 qrels):
 
 | Run | Method | MAP | P@5 | P@10 | NDCG@20 | Recall@1000 |
 |-----|--------|-----|-----|------|---------|-------------|
-| **3** | **RRF Fusion (k=30, w=[1.5,0.8])** | **0.3111** ⭐ | 0.5658 | 0.4935 | 0.4699 | 0.7710 |
+| **3** | **RRF Fusion (k=30, w=[1.5,1.0])** | **0.3144** ⭐ | 0.5628 | 0.5095 | 0.4778 | 0.7699 |
 | 1 | BM25 + RM3 | 0.3006 | 0.5116 | 0.4683 | 0.4385 | 0.7735 |
-| 2 | Neural Reranking (BGE-v2) | 0.2711 | 0.5548 | 0.5010 | 0.4583 | 0.7139 |
+| 2 | Neural Reranking (BGE-v2, MaxP) | 0.2714 | 0.5538 | 0.4864 | 0.4542 | 0.7139 |
 
 ### Key Observations
 
