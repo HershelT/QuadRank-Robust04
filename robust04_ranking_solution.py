@@ -861,14 +861,20 @@ Relevant passage:"""
                     else:
                         raise
 
-                # Aggregate MaxP scores
+                # Aggregate SumP scores (Method 2.3: better than pure MaxP)
+                # Formula: score = α * max(scores) + (1-α) * mean(scores)
+                # Captures both peak relevance AND document coherence
+                SUMP_ALPHA = 0.7  # Weight for max score (0.7 max, 0.3 mean)
                 doc_max_scores = []
                 score_idx = 0
                 for docid, num_chunks in doc_chunk_map:
                     if num_chunks > 0:
-                        # Max over this doc's chunks
-                        max_score = np.max(chunk_scores[score_idx : score_idx+num_chunks])
-                        doc_max_scores.append((docid, float(max_score)))
+                        chunk_slice = chunk_scores[score_idx : score_idx+num_chunks]
+                        max_score = np.max(chunk_slice)
+                        mean_score = np.mean(chunk_slice)
+                        # SumP formula
+                        final_score = SUMP_ALPHA * max_score + (1 - SUMP_ALPHA) * mean_score
+                        doc_max_scores.append((docid, float(final_score)))
                         score_idx += num_chunks
                 
                 # Sort and merge
@@ -1263,7 +1269,22 @@ Relevant passage:"""
         self._write_trec_run(results_1b, "run_1b", output_1b)
         
         # ============================================================
-        # RUN 2: Neural Reranking (2025 SOTA models with fallback)
+        # RUN 1C: BM25-plain (No RM3, for diversity in fusion)
+        # ============================================================
+        # Per research 3.1: Adding more rankers improves fusion by 1-2%
+        print(f"\n{'='*60}")
+        print("METHOD 1C: BM25-plain (No Query Expansion)")
+        print(f"{'='*60}")
+        self.searcher.set_bm25(0.9, 0.4)  # Default BM25 params
+        results_1c = {}
+        for qid in tqdm(self.test_qids, desc="BM25-plain"):
+            hits = self.searcher.search(self.queries[qid], k=1000)
+            results_1c[qid] = [(hit.docid, hit.score) for hit in hits]
+        output_1c = os.path.join(self.output_dir, "run_1c.res")
+        self._write_trec_run(results_1c, "run_1c", output_1c)
+        
+        # ============================================================
+        # RUN 2: Neural Reranking with SumP (2025 SOTA models)
         # ============================================================
         results_2 = self.run_neural_reranking(
             model_name='auto',  # Will try: BGE-v2 → Qwen3 → BGE-large → MiniLM
@@ -1345,15 +1366,51 @@ Relevant passage:"""
                 best_k = 30
                 best_weights = [1.5, 0.8]  # [BM25 weight, Neural weight]
         
-        # Fuse 3-way: BM25+RM3 + Query2Doc + Neural using weighted RRF
-        # Per research 3.1: multi-ranker fusion beats 2-ranker by 1-2%
-        # Weights: [BM25+RM3, Query2Doc, Neural]
-        results_3 = self.weighted_reciprocal_rank_fusion(
-            [results_1, results_1b, results_2], 
-            k=best_k, 
-            weights=[best_weights[0], best_weights[0], best_weights[1] if len(best_weights) > 1 else 0.8]
-        )
-        print(f"✓ Fused 3-way: BM25+RM3 + Query2Doc + Neural (k={best_k})")
+        # ============================================================
+        # 4-WAY RRF FUSION with Query-Dependent Weights
+        # ============================================================
+        # Per research 3.1: 4-ranker fusion beats 2-ranker by 1-2%
+        # Per research 3.3: Query-dependent weighting adds +1-3%
+        print("\n--- Applying 4-way RRF with Query-Dependent Weights ---")
+        
+        def get_query_weights(query: str) -> list:
+            """
+            Query-dependent weighting (Method 3.3)
+            Short queries → favor BM25 (lexical)
+            Long queries → favor Neural (semantic)
+            """
+            word_count = len(query.split())
+            if word_count <= 3:
+                # Short query: favor BM25/lexical heavily
+                # [BM25+RM3, Query2Doc, BM25-plain, Neural]
+                return [1.5, 1.3, 1.2, 0.7]
+            elif word_count <= 5:
+                # Medium query: balanced
+                return [1.3, 1.2, 1.0, 1.0]
+            else:
+                # Long query: favor Neural/semantic
+                return [1.0, 1.0, 0.8, 1.5]
+        
+        # Fuse per-query with adaptive weights
+        results_3 = {}
+        for qid in self.test_qids:
+            query = self.queries[qid]
+            weights = get_query_weights(query)
+            
+            # Get rankings for this query
+            rankings = [
+                {qid: results_1.get(qid, [])},
+                {qid: results_1b.get(qid, [])},
+                {qid: results_1c.get(qid, [])},
+                {qid: results_2.get(qid, [])}
+            ]
+            
+            # Fuse just this query
+            fused = self.weighted_reciprocal_rank_fusion(rankings, k=best_k, weights=weights)
+            results_3[qid] = fused.get(qid, [])
+        
+        print(f"✓ Fused 4-way: BM25+RM3 + Query2Doc + BM25-plain + Neural (k={best_k})")
+        print(f"  Query-dependent weights: Short→BM25, Long→Neural")
         
         output_3 = os.path.join(self.output_dir, "run_3.res")
         self._write_trec_run(results_3, "run_3", output_3)
@@ -1364,13 +1421,15 @@ Relevant passage:"""
         print(f"\nGenerated files:")
         print(f"  1.  {output_1} - BM25 + RM3 (Query Expansion)")
         print(f"  1b. {output_1b} - BM25 + Query2Doc + RM3 (LLM-Enhanced)")
-        print(f"  2.  {output_2} - Neural Reranking (MaxP Cross-Encoder)")
-        print(f"  3.  {output_3} - 3-way RRF Fusion ⭐ BEST")
+        print(f"  1c. {output_1c} - BM25-plain (No Expansion)")
+        print(f"  2.  {output_2} - Neural Reranking (SumP Cross-Encoder)")
+        print(f"  3.  {output_3} - 4-way RRF Fusion ⭐ BEST")
         print("\nReady for submission!")
         
         return {
             'run_1': results_1,
             'run_1b': results_1b,
+            'run_1c': results_1c,
             'run_2': results_2,
             'run_3': results_3
         }
