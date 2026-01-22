@@ -20,17 +20,9 @@ import sys
 import time
 import re
 import argparse
-import hashlib
 from collections import defaultdict
 from typing import List, Dict, Tuple, Optional
 import json
-
-# Load environment variables from .env file
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass  # dotenv not required if env vars set directly
 
 # Install required packages if not present
 def install_packages():
@@ -43,8 +35,6 @@ def install_packages():
         'tqdm',
         'numpy',
         'FlagEmbedding',  # For BGE reranker models
-        'google-generativeai',  # For Gemini API (Query2Doc)
-        'python-dotenv',  # For loading .env file
     ]
     import subprocess
     for pkg in packages:
@@ -294,63 +284,6 @@ class ROBUST04Retriever:
         return combined
 
     # ============================================================
-    # LLM QUERY EXPANSION (Query2Doc) - CACHE-ONLY MODE
-    # ============================================================
-    # NOTE: Run precompute_expansions.py first to generate the cache!
-    
-    EXPANSION_CACHE_FILE = "query_expansions.json"
-    
-    def _load_expansion_cache(self) -> Dict[str, str]:
-        """Load cached LLM expansions from disk"""
-        cache_file = os.path.join(self.output_dir, self.EXPANSION_CACHE_FILE)
-        if os.path.exists(cache_file):
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return {}
-    
-    def expand_queries_with_llm(self, qids: List[str]) -> Dict[str, str]:
-        """
-        Load LLM-expanded queries from cache (Query2Doc).
-        
-        IMPORTANT: Run precompute_expansions.py first to generate the cache!
-        This method is cache-only and will not make API calls.
-        
-        Returns:
-            Dict mapping qid -> expanded query (original + pseudo-doc)
-        """
-        cache = self._load_expansion_cache()
-        cache_file = os.path.join(self.output_dir, self.EXPANSION_CACHE_FILE)
-        
-        if not cache:
-            print(f"⚠ WARNING: No expansion cache found at {cache_file}")
-            print(f"  Run: python precompute_expansions.py --queries {self.queries_path} --output {self.output_dir}")
-            print(f"  Falling back to original queries (no LLM expansion)")
-            return {qid: self.queries[qid] for qid in qids}
-        
-        expanded = {}
-        missing = 0
-        
-        for qid in qids:
-            query = self.queries[qid]
-            cache_key = hashlib.md5(query.encode()).hexdigest()
-            
-            if cache_key in cache:
-                pseudo_doc = cache[cache_key]
-                expanded[qid] = f"{query} {pseudo_doc}"
-            else:
-                # Fallback to original query if not in cache
-                expanded[qid] = query
-                missing += 1
-        
-        if missing > 0:
-            print(f"⚠ WARNING: {missing}/{len(qids)} queries missing from cache")
-            print(f"  Run: python precompute_expansions.py --queries {self.queries_path}")
-        else:
-            print(f"📁 Loaded all {len(qids)} expansions from cache")
-        
-        return expanded
-
-    # ============================================================
     # METHOD 1: BM25 + RM3 (Query Expansion)
     # ============================================================
     
@@ -383,42 +316,28 @@ class ROBUST04Retriever:
         # === VALIDATE FIRST on train/val sets ===
         if self.qrels:
             print("\n--- Validating on held-out queries FIRST ---")
+            self.searcher.set_bm25(k1, b)
+            self.searcher.set_rm3(fb_terms, fb_docs, original_weight)
             
-            # Check for cached validation results
-            val_cache_file = os.path.join(self.output_dir, "val_results_bm25.json")
-            if os.path.exists(val_cache_file):
-                print(f"📁 Loading cached validation results from {val_cache_file}")
-                with open(val_cache_file, 'r') as f:
-                    self.val_results_bm25 = json.load(f)
-                val_map = self.compute_map(self.val_results_bm25)
-                print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
-            else:
-                self.searcher.set_bm25(k1, b)
-                self.searcher.set_rm3(fb_terms, fb_docs, original_weight)
-                
-                train_results = {}
-                for qid in self.train_qids:
-                    hits_list = self.searcher.search(self.queries[qid], k=hits)
-                    train_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
-                
-                val_results = {}
-                for qid in self.val_qids:
-                    hits_list = self.searcher.search(self.queries[qid], k=hits)
-                    val_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
-                
-                self.searcher.unset_rm3()
-                
-                train_map = self.compute_map(train_results)
-                val_map = self.compute_map(val_results)
-                print(f"✓ Train MAP ({len(self.train_qids)} queries): {train_map:.4f}")
-                print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
-                
-                # Cache validation results for RRF tuning
-                self.val_results_bm25 = val_results
-                with open(val_cache_file, 'w') as f:
-                    json.dump(val_results, f)
-                print(f"💾 Saved validation results to {val_cache_file}")
-
+            train_results = {}
+            for qid in self.train_qids:
+                hits_list = self.searcher.search(self.queries[qid], k=hits)
+                train_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
+            
+            val_results = {}
+            for qid in self.val_qids:
+                hits_list = self.searcher.search(self.queries[qid], k=hits)
+                val_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
+            
+            self.searcher.unset_rm3()
+            
+            train_map = self.compute_map(train_results)
+            val_map = self.compute_map(val_results)
+            print(f"✓ Train MAP ({len(self.train_qids)} queries): {train_map:.4f}")
+            print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
+            
+            # Cache validation results for RRF tuning
+            self.val_results_bm25 = val_results
             print("   (Cached for RRF tuning)")
             print("--- Now running on 199 test queries ---\n")
         
@@ -430,85 +349,6 @@ class ROBUST04Retriever:
         for qid in tqdm(self.test_qids, desc="BM25+RM3"):
             query = self.queries[qid]
             hits_list = self.searcher.search(query, k=hits)
-            results[qid] = [(hit.docid, hit.score) for hit in hits_list]
-        
-        self.searcher.unset_rm3()
-        
-        return results
-    
-    def run_bm25_query2doc(self, k1: float = 0.9, b: float = 0.4,
-                           fb_terms: int = 70, fb_docs: int = 10,
-                           original_weight: float = 0.3,
-                           hits: int = 1000) -> Dict[str, List[Tuple[str, float]]]:
-        """
-        Run BM25 + RM3 with LLM Query Expansion (Query2Doc)
-        
-        This combines two query expansion techniques:
-        1. Query2Doc: LLM generates pseudo-documents that are concatenated with query
-        2. RM3: Traditional pseudo-relevance feedback on expanded query
-        
-        Based on EMNLP 2023 paper showing +3-15% improvement over base BM25.
-        
-        Args:
-            k1: BM25 k1 parameter
-            b: BM25 b parameter  
-            fb_terms: RM3 expansion terms (higher=more aggressive, research suggests 70-100)
-            fb_docs: RM3 feedback documents
-            original_weight: Weight of original query vs expansion (lower=more expansion)
-            hits: Number of documents to retrieve
-        """
-        print(f"\n{'='*60}")
-        print("METHOD 1B: BM25 + Query2Doc + RM3")
-        print(f"{'='*60}")
-        print(f"Using LLM-expanded queries with RM3")
-        print(f"Parameters: k1={k1}, b={b}, fb_terms={fb_terms}, original_weight={original_weight}")
-        
-        # Expand queries using LLM (with caching)
-        print("\n--- Expanding queries with LLM ---")
-        all_qids = list(set(self.val_qids + self.test_qids))
-        expanded_queries = self.expand_queries_with_llm(all_qids)
-        
-        # === VALIDATE FIRST on held-out queries ===
-        if self.qrels:
-            print("\n--- Validating on held-out queries FIRST ---")
-            
-            val_cache_file = os.path.join(self.output_dir, "val_results_bm25_q2d.json")
-            if os.path.exists(val_cache_file):
-                print(f"📁 Loading cached Query2Doc validation results from {val_cache_file}")
-                with open(val_cache_file, 'r') as f:
-                    self.val_results_bm25_q2d = json.load(f)
-                val_map = self.compute_map(self.val_results_bm25_q2d)
-                print(f"✓ Validation MAP (Query2Doc): {val_map:.4f}")
-            else:
-                self.searcher.set_bm25(k1, b)
-                self.searcher.set_rm3(fb_terms, fb_docs, original_weight)
-                
-                val_results = {}
-                for qid in tqdm(self.val_qids, desc="Validating Q2D"):
-                    exp_query = expanded_queries.get(qid, self.queries[qid])
-                    hits_list = self.searcher.search(exp_query, k=hits)
-                    val_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
-                
-                self.searcher.unset_rm3()
-                
-                val_map = self.compute_map(val_results)
-                print(f"✓ Validation MAP (Query2Doc): {val_map:.4f}")
-                
-                self.val_results_bm25_q2d = val_results
-                with open(val_cache_file, 'w') as f:
-                    json.dump(val_results, f)
-                print(f"💾 Saved Query2Doc validation results to {val_cache_file}")
-            
-            print("--- Now running on 199 test queries ---\n")
-        
-        # === NOW run on test queries ===
-        self.searcher.set_bm25(k1, b)
-        self.searcher.set_rm3(fb_terms, fb_docs, original_weight)
-        
-        results = {}
-        for qid in tqdm(self.test_qids, desc="BM25+Query2Doc+RM3"):
-            exp_query = expanded_queries.get(qid, self.queries[qid])
-            hits_list = self.searcher.search(exp_query, k=hits)
             results[qid] = [(hit.docid, hit.score) for hit in hits_list]
         
         self.searcher.unset_rm3()
@@ -594,13 +434,7 @@ class ROBUST04Retriever:
             # Use specified model
             full_model_name = self.RERANKER_MODELS.get(model_name, model_name)
             print(f"Loading model: {full_model_name}")
-            cross_encoder = CrossEncoder(
-                full_model_name, 
-                max_length=512, 
-                device=self.device,
-                automodel_args={'torch_dtype': torch.float16} if self.device == 'cuda' else None
-            )
-            print("✓ Enabled FP16 (half-precision) for speed")
+            cross_encoder = CrossEncoder(full_model_name, max_length=512, device=self.device)
             model_name = full_model_name
         
         print(f"Model: {model_name}")
@@ -612,246 +446,115 @@ class ROBUST04Retriever:
         # === VALIDATE FIRST on held-out queries ===
         if self.qrels:
             print("\n--- Validating on held-out queries FIRST ---")
-            
-            # Check cache
-            val_cache_file = os.path.join(self.output_dir, "val_results_neural.json")
-            if os.path.exists(val_cache_file):
-                print(f"📁 Loading cached neural validation results from {val_cache_file}")
-                with open(val_cache_file, 'r') as f:
-                    self.val_results_neural = json.load(f)
-                val_map = self.compute_map(self.val_results_neural)
-                print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
-            else:
-                val_results = {}
-                for qid in tqdm(self.val_qids, desc="Validation"):
-                    query = self.queries[qid]
-                    bm25_hits = self.searcher.search(query, k=initial_hits)
-                    if not bm25_hits:
-                        val_results[qid] = []
-                        continue
-                        
-                    # Prepare all chunks for all docs
-                    pairs = []
-                    doc_chunk_map = []  # (docid, num_chunks)
-                    
-                    for hit in bm25_hits:
-                        doc = self.searcher.doc(hit.docid)
-                        if doc:
-                            raw = doc.raw() if hasattr(doc, 'raw') else doc.contents()
-                            if raw:
-                                clean = self._extract_text_robust(raw)
-                                # Generate chunks (MaxP)
-                                chunks = chunk_text(clean)
-                                # Limit to max 2 chunks per doc for speed (MaxP optimization)
-                                chunks = chunks[:2]
-                                
-                                for chunk in chunks:
-                                    pairs.append([query, chunk])
-                                doc_chunk_map.append((hit.docid, len(chunks)))
-                    
-                    if not pairs:
-                        val_results[qid] = [(h.docid, h.score) for h in bm25_hits]
-                        continue
-                    
-                    # Predict
-                    try:
-                        chunk_scores = cross_encoder.predict(pairs, batch_size=batch_size, show_progress_bar=False)
-                    except RuntimeError as e:
-                        if "out of memory" in str(e).lower():
-                            chunk_scores = cross_encoder.predict(pairs, batch_size=batch_size//2, show_progress_bar=False)
-                        else:
-                            raise
-
-                    # Aggregate
-                    doc_max_scores = []
-                    idx = 0
-                    for docid, num_chunks in doc_chunk_map:
-                        if num_chunks > 0:
-                            # Take max score of chunks
-                            best_score = max(chunk_scores[idx : idx+num_chunks])
-                            doc_max_scores.append((docid, float(best_score)))
-                            idx += num_chunks
-                    
-                    # Sort
-                    val_results[qid] = sorted(doc_max_scores, key=lambda x: x[1], reverse=True)
-                
-                val_map = self.compute_map(val_results)
-                print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
-                
-                # Cache results
-                self.val_results_neural = val_results
-                with open(val_cache_file, 'w') as f:
-                    json.dump(val_results, f)
-                print(f"💾 Saved neural validation results to {val_cache_file}")
-            
-    def run_neural_reranking(self, model_name: str = 'auto',
-                             initial_hits: int = 100, final_hits: int = 1000,
-                             batch_size: int = 32) -> Dict[str, List[Tuple[str, float]]]:
-        """
-        Two-stage retrieval with neural reranking using MaxP (Max Passage) strategy
-        
-        Stage 1: BM25 retrieval for initial candidates
-        Stage 2: Cross-encoder reranking on SLIDING WINDOWS of text
-        
-        MaxP Strategy:
-        - Split long documents into overlapping chunks (passages)
-        - Score each chunk independently
-        - Document score = Max(chunk scores)
-        - Essential for ROBUST04 where documents are long (2000+ words)
-        
-        Args:
-            model_name: Model key or full HuggingFace model path
-            initial_hits: Number of BM25 candidates to rerank
-            final_hits: Final number of results to return
-            batch_size: Batch size for neural model
-        """
-        print(f"\n{'='*60}")
-        print("METHOD 2: Neural Reranking with MaxP Sliding Window")
-        print(f"{'='*60}")
-        
-        # Model selection
-        if model_name == 'auto':
-            model_priority = ['bge-v2-m3', 'qwen3-0.6b-cls', 'bge-large', 'minilm']
-            cross_encoder = None
-            for model_key in model_priority:
-                try:
-                    full_model_name = self.RERANKER_MODELS.get(model_key, model_key)
-                    print(f"Trying model: {full_model_name}...")
-                    cross_encoder = CrossEncoder(full_model_name, max_length=512, device=self.device)
-                    print(f"✓ Successfully loaded: {full_model_name}")
-                    model_name = full_model_name
-                    break
-                except Exception as e:
-                    print(f"✗ Failed to load {full_model_name}: {e}")
-                    continue
-            if cross_encoder is None:
-                raise RuntimeError("No reranker model could be loaded!")
-        else:
-            full_model_name = self.RERANKER_MODELS.get(model_name, model_name)
-            print(f"Loading model: {full_model_name}")
-            cross_encoder = CrossEncoder(full_model_name, max_length=512, device=self.device)
-            model_name = full_model_name
-        
-        print(f"Model: {model_name}")
-        print(f"Initial BM25 hits: {initial_hits}, Batch size: {batch_size}")
-        print("Strategy: MaxP (splitting docs into overlapping 512-token chunks)")
-        
-        self.searcher.set_bm25(0.9, 0.4)
-        
-        def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 500) -> List[str]:
-            """Split text into overlapping chunks (approx chars)"""
-            if len(text) <= chunk_size:
-                return [text]
-            chunks = []
-            start = 0
-            while start < len(text):
-                end = min(start + chunk_size, len(text))
-                chunks.append(text[start:end])
-                if end == len(text):
-                    break
-                start += (chunk_size - overlap)
-            return chunks
-
-        def rerank_batch(qids, qrels=None, desc="Reranking"):
-            batch_results = {}
-            for qid in tqdm(qids, desc=desc):
+            val_results = {}
+            for qid in tqdm(self.val_qids, desc="Validation"):
                 query = self.queries[qid]
-                
-                # Full recall retrieval
-                all_bm25_hits = self.searcher.search(query, k=1000)
-                if not all_bm25_hits:
-                    batch_results[qid] = []
+                bm25_hits = self.searcher.search(query, k=initial_hits)
+                if not bm25_hits:
+                    val_results[qid] = []
                     continue
-                
-                # Rerank top N
-                rerank_hits = all_bm25_hits[:initial_hits]
-                remaining_hits = all_bm25_hits[initial_hits:]
-                
-                # Prepare all chunks for all docs
                 pairs = []
-                doc_chunk_map = []  # (docid, num_chunks)
-                
-                for hit in rerank_hits:
+                doc_ids = []
+                for hit in bm25_hits:
                     doc = self.searcher.doc(hit.docid)
                     if doc:
-                        raw = doc.raw() if hasattr(doc, 'raw') else doc.contents()
-                        if raw:
-                            clean = self._extract_text_robust(raw)
-                            # Generate chunks (MaxP)
-                            chunks = chunk_text(clean)
-                            # Limit to max 4 chunks per doc to prevent explosion (balanced)
-                            chunks = chunks[:4]
-                            
-                            for chunk in chunks:
-                                pairs.append([query, chunk])
-                            doc_chunk_map.append((hit.docid, len(chunks)))
-                
-                if not pairs:
-                    batch_results[qid] = [(h.docid, h.score) for h in all_bm25_hits[:final_hits]]
-                    continue
-                
-                # Predict scores for all chunks
-                try:
-                    chunk_scores = cross_encoder.predict(pairs, batch_size=batch_size, show_progress_bar=False)
-                except RuntimeError as e:
-                    if "out of memory" in str(e).lower():
-                        print(f"⚠ OOM, reducing batch size")
-                        torch.cuda.empty_cache()
-                        chunk_scores = cross_encoder.predict(pairs, batch_size=batch_size//2, show_progress_bar=False)
-                    else:
-                        raise
-
-                # Aggregate SumP scores (Method 2.3: better than pure MaxP)
-                # Formula: score = α * max(scores) + (1-α) * mean(scores)
-                # Captures both peak relevance AND document coherence
-                SUMP_ALPHA = 0.7  # Weight for max score (0.7 max, 0.3 mean)
-                doc_max_scores = []
-                score_idx = 0
-                for docid, num_chunks in doc_chunk_map:
-                    if num_chunks > 0:
-                        chunk_slice = chunk_scores[score_idx : score_idx+num_chunks]
-                        max_score = np.max(chunk_slice)
-                        mean_score = np.mean(chunk_slice)
-                        # SumP formula
-                        final_score = SUMP_ALPHA * max_score + (1 - SUMP_ALPHA) * mean_score
-                        doc_max_scores.append((docid, float(final_score)))
-                        score_idx += num_chunks
-                
-                # Sort and merge
-                doc_max_scores.sort(key=lambda x: x[1], reverse=True)
-                
-                # Merge with remaining BM25
-                final_res = doc_max_scores[:]
-                min_neural = doc_max_scores[-1][1] if doc_max_scores else 0
-                
-                seen = {d for d, _ in doc_max_scores}
-                for i, hit in enumerate(remaining_hits):
-                    if hit.docid not in seen:
-                        # Scale BM25 to be below neural
-                        final_res.append((hit.docid, min_neural - 0.01 * (i + 1)))
-                
-                batch_results[qid] = final_res[:final_hits]
-                
-                if self.device == 'cuda' and int(qid) % 20 == 0:
-                    torch.cuda.empty_cache()
+                        raw_content = doc.raw() if hasattr(doc, 'raw') else doc.contents()
+                        if raw_content:
+                            clean_content = self._extract_text_robust(raw_content)
+                            pairs.append([query, clean_content[:2000]])
+                            doc_ids.append(hit.docid)
+                if pairs:
+                    scores = cross_encoder.predict(pairs, batch_size=batch_size, show_progress_bar=False)
+                    doc_scores = sorted(zip(doc_ids, scores), key=lambda x: x[1], reverse=True)
+                    val_results[qid] = [(docid, float(score)) for docid, score in doc_scores]
+                else:
+                    val_results[qid] = [(hit.docid, hit.score) for hit in bm25_hits]
             
-            return batch_results
-
-        # === VALIDATE FIRST ===
-        if self.qrels:
-            print("\n--- Validating on held-out queries (MaxP) ---")
-            val_results = rerank_batch(self.val_qids, self.qrels, desc="Val MaxP")
             val_map = self.compute_map(val_results)
-            print(f"✓ Validation MAP (MaxP): {val_map:.4f}")
+            print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
+            
+            # Cache validation results for RRF tuning
             self.val_results_neural = val_results
             print("   (Cached for RRF tuning)")
+            print("--- Now running on 199 test queries ---\n")
         
-        # === TEST RUN ===
-        print("\n--- Running on test queries (MaxP) ---")
-        results = rerank_batch(self.test_qids, desc="Test MaxP")
+        # === NOW run on test queries ===
+        results = {}
         
+        for qid in tqdm(self.test_qids, desc="Neural Reranking"):
+            query = self.queries[qid]
+            
+            # Stage 1: BM25 retrieval - get 1000 docs for full recall
+            all_bm25_hits = self.searcher.search(query, k=1000)
+            
+            if not all_bm25_hits:
+                results[qid] = []
+                continue
+            
+            # Only rerank top initial_hits (e.g., 100-200) for efficiency
+            rerank_hits = all_bm25_hits[:initial_hits]
+            remaining_hits = all_bm25_hits[initial_hits:]
+            
+            # Prepare query-document pairs for reranking
+            pairs = []
+            doc_ids = []
+            for hit in rerank_hits:
+                doc = self.searcher.doc(hit.docid)
+                if doc:
+                    # CRITICAL: Use robust extraction for SGML documents
+                    raw_content = doc.raw() if hasattr(doc, 'raw') else doc.contents()
+                    if raw_content:
+                        clean_content = self._extract_text_robust(raw_content)
+                        # Truncate to ~512 tokens (approx 2000 chars)
+                        pairs.append([query, clean_content[:2000]])
+                        doc_ids.append(hit.docid)
+            
+            if not pairs:
+                # Fallback to BM25 scores
+                results[qid] = [(hit.docid, hit.score) for hit in all_bm25_hits[:final_hits]]
+                continue
+            
+            # Stage 2: Cross-encoder reranking on top candidates
+            try:
+                scores = cross_encoder.predict(pairs, batch_size=batch_size, show_progress_bar=False)
+            except RuntimeError as e:
+                # Handle OOM by reducing batch size
+                if "out of memory" in str(e).lower():
+                    print(f"\n⚠ OOM error, reducing batch size to {batch_size//2}")
+                    torch.cuda.empty_cache()
+                    scores = cross_encoder.predict(pairs, batch_size=batch_size//2, show_progress_bar=False)
+                else:
+                    raise
+            
+            # Combine reranked docs with remaining BM25 docs
+            reranked = list(zip(doc_ids, scores))
+            reranked.sort(key=lambda x: x[1], reverse=True)
+            
+            # Get minimum neural score to ensure remaining docs are ranked lower
+            min_neural_score = min(scores) if len(scores) > 0 else 0
+            
+            # Build final results: reranked docs first, then remaining BM25 docs
+            final_results = [(docid, float(score)) for docid, score in reranked]
+            
+            # Add remaining BM25 docs with scores below min neural score
+            reranked_docids = set(doc_ids)
+            for i, hit in enumerate(remaining_hits):
+                if hit.docid not in reranked_docids:
+                    # Assign decreasing scores below min neural score
+                    adjusted_score = min_neural_score - 0.01 * (i + 1)
+                    final_results.append((hit.docid, adjusted_score))
+            
+            results[qid] = final_results[:final_hits]
+            
+            # Periodic GPU memory cleanup
+            if self.device == 'cuda' and int(qid) % 50 == 0:
+                torch.cuda.empty_cache()
+        
+        # Clear GPU memory
         del cross_encoder
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         return results
     
     # ============================================================
@@ -1194,52 +897,21 @@ class ROBUST04Retriever:
         self._write_trec_run(results_1, "run_1", output_1)
         
         # ============================================================
-        # RUN 1B: BM25 + Query2Doc + RM3 (LLM-Enhanced)
-        # ============================================================
-        # Per research 1.1: Query2Doc adds +3-15% over base BM25
-        # Per research 1.4: fb_terms=70, original_weight=0.3 for news articles
-        results_1b = self.run_bm25_query2doc(
-            k1=best_params.get('k1', 0.7),
-            b=best_params.get('b', 0.65),
-            fb_terms=70,  # Research: 70-100 for news articles
-            fb_docs=10,
-            original_weight=0.3  # More aggressive expansion
-        )
-        output_1b = os.path.join(self.output_dir, "run_1b.res")
-        self._write_trec_run(results_1b, "run_1b", output_1b)
-        
-        # ============================================================
-        # RUN 1C: BM25-plain (No RM3, for diversity in fusion)
-        # ============================================================
-        # Per research 3.1: Adding more rankers improves fusion by 1-2%
-        print(f"\n{'='*60}")
-        print("METHOD 1C: BM25-plain (No Query Expansion)")
-        print(f"{'='*60}")
-        self.searcher.set_bm25(0.9, 0.4)  # Default BM25 params
-        results_1c = {}
-        for qid in tqdm(self.test_qids, desc="BM25-plain"):
-            hits = self.searcher.search(self.queries[qid], k=1000)
-            results_1c[qid] = [(hit.docid, hit.score) for hit in hits]
-        output_1c = os.path.join(self.output_dir, "run_1c.res")
-        self._write_trec_run(results_1c, "run_1c", output_1c)
-        
-        # ============================================================
-        # RUN 2: Neural Reranking with SumP (2025 SOTA models)
+        # RUN 2: Neural Reranking (2025 SOTA models with fallback)
         # ============================================================
         results_2 = self.run_neural_reranking(
             model_name='auto',  # Will try: BGE-v2 → Qwen3 → BGE-large → MiniLM
-            initial_hits=250,   # User confirmed 250 hits provides better results
+            initial_hits=250,   # Increased from 150 for better recall
             batch_size=32
         )
         output_2 = os.path.join(self.output_dir, "run_2.res")
         self._write_trec_run(results_2, "run_2", output_2)
         
         # ============================================================
-        # RUN 3: RRF Fusion (3-way: BM25+RM3, Query2Doc, Neural)
+        # RUN 3: RRF Fusion of Neural + BM25+RM3 (Best of Both Worlds)
         # ============================================================
-        # Per research 3.1: 4-ranker fusion beats 2-ranker by 1-2%
         print(f"\n{'='*60}")
-        print("METHOD 3: RRF Fusion (BM25+RM3 + Query2Doc + Neural)")
+        print("METHOD 3: RRF Fusion (Neural + BM25+RM3)")
         print(f"{'='*60}")
         
         # --- Tune RRF parameters on validation set ---
@@ -1306,51 +978,11 @@ class ROBUST04Retriever:
                 best_k = 30
                 best_weights = [1.5, 0.8]  # [BM25 weight, Neural weight]
         
-        # ============================================================
-        # 4-WAY RRF FUSION with Query-Dependent Weights
-        # ============================================================
-        # Per research 3.1: 4-ranker fusion beats 2-ranker by 1-2%
-        # Per research 3.3: Query-dependent weighting adds +1-3%
-        print("\n--- Applying 4-way RRF with Query-Dependent Weights ---")
-        
-        def get_query_weights(query: str) -> list:
-            """
-            Query-dependent weighting (Method 3.3)
-            Short queries → favor BM25 (lexical)
-            Long queries → favor Neural (semantic)
-            """
-            word_count = len(query.split())
-            if word_count <= 3:
-                # Short query: favor BM25/lexical heavily
-                # [BM25+RM3, Query2Doc, BM25-plain, Neural]
-                return [1.5, 1.3, 1.2, 0.7]
-            elif word_count <= 5:
-                # Medium query: balanced
-                return [1.3, 1.2, 1.0, 1.0]
-            else:
-                # Long query: favor Neural/semantic
-                return [1.0, 1.0, 0.8, 1.5]
-        
-        # Fuse per-query with adaptive weights
-        results_3 = {}
-        for qid in self.test_qids:
-            query = self.queries[qid]
-            weights = get_query_weights(query)
-            
-            # Get rankings for this query
-            rankings = [
-                {qid: results_1.get(qid, [])},
-                {qid: results_1b.get(qid, [])},
-                {qid: results_1c.get(qid, [])},
-                {qid: results_2.get(qid, [])}
-            ]
-            
-            # Fuse just this query
-            fused = self.weighted_reciprocal_rank_fusion(rankings, k=best_k, weights=weights)
-            results_3[qid] = fused.get(qid, [])
-        
-        print(f"✓ Fused 4-way: BM25+RM3 + Query2Doc + BM25-plain + Neural (k={best_k})")
-        print(f"  Query-dependent weights: Short→BM25, Long→Neural")
+        # Fuse Neural (run_2) with BM25+RM3 (run_1) using weighted RRF
+        results_3 = self.weighted_reciprocal_rank_fusion(
+            [results_1, results_2], k=best_k, weights=best_weights
+        )
+        print(f"✓ Fused Neural + BM25+RM3 (k={best_k}, weights={best_weights})")
         
         output_3 = os.path.join(self.output_dir, "run_3.res")
         self._write_trec_run(results_3, "run_3", output_3)
@@ -1359,17 +991,13 @@ class ROBUST04Retriever:
         print("COMPLETION SUMMARY")
         print("="*80)
         print(f"\nGenerated files:")
-        print(f"  1.  {output_1} - BM25 + RM3 (Query Expansion)")
-        print(f"  1b. {output_1b} - BM25 + Query2Doc + RM3 (LLM-Enhanced)")
-        print(f"  1c. {output_1c} - BM25-plain (No Expansion)")
-        print(f"  2.  {output_2} - Neural Reranking (SumP Cross-Encoder)")
-        print(f"  3.  {output_3} - 4-way RRF Fusion ⭐ BEST")
+        print(f"  1. {output_1} - BM25 + RM3 (Query Expansion)")
+        print(f"  2. {output_2} - Neural Reranking (Cross-Encoder)")
+        print(f"  3. {output_3} - RRF Fusion (k={best_k}, w={best_weights}) ⭐ BEST")
         print("\nReady for submission!")
         
         return {
             'run_1': results_1,
-            'run_1b': results_1b,
-            'run_1c': results_1c,
             'run_2': results_2,
             'run_3': results_3
         }
