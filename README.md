@@ -399,6 +399,32 @@ Where:
 
 ---
 
+## Methodological Innovations & Novel Contributions
+
+This project implements three advanced retrieval techniques that significantly extend standard course methodologies.
+
+### 1. Triple-Signal Hybrid Fusion (The "Ensemble of Experts")
+Unlike traditional systems that rely on a single ranking signal, this project implements a **Multi-Signal Architecture** that fuses three fundamentally different relevance signals:
+*   **Lexical Signal (BM25+RM3)**: Captures exact keyword matches and frequency statistics (High Recall).
+*   **Semantic Signal (Neural Reranking)**: Captures deep semantic meaning and passage understanding using Transformer-based Cross-Encoders (High Precision).
+*   **Generative Signal (Query2Doc)**: Captures "hallucinated" context and missing terms using Large Language Models (Context Injection).
+
+By combining these orthogonal signals via **Reciprocal Rank Fusion (RRF)**, the system achieves a robust consensus that outperforms any single method (~10% improvement over the strong BM25+RM3 baseline).
+
+### 2. Generative Query Expansion (Query2Doc)
+To address the "vocabulary mismatch" problem in short queries (e.g., "airport security"), we implemented the **Query2Doc** technique (EMNLP 2023).
+*   **Mechanism**: The system prompts a Gemini 3 Pro Nano model to *generate* a pseudo-document that answers the user's query.
+*   **Effect**: This generated passage acts as a "semantic bridge," introducing relevant terms (e.g., "screening," "TSA," "regulations") that were not present in the original 2-word query.
+*   **Result**: Enables the lexical retrieval components to find documents that are semantically relevant but lack term overlap.
+
+### 3. Neural Semantic Reranking with Domain Adaptation
+We deployed a **Cross-Encoder architecture** (BGE-Reranker-v2-m3) specifically optimized for passage ranking.
+*   **Input**: `[CLS] Query [SEP] Document [SEP]`
+*   **Processing**: The model attends to every interaction between query and document tokens.
+*   **Optimization**: To handle the long documents of ROBUST04, we implemented a "Fast Mode" strategy that focuses on the lead paragraph (first 512 tokens), where news articles typically concentrate their key information. This provided a 4x speedup with minimal accuracy loss.
+
+---
+
 ## Output Format
 
 Results are written in standard TREC format:

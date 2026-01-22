@@ -1045,6 +1045,8 @@ class ROBUST04Retriever:
         
         def get_query_weights(query: str) -> list:
             """Query-dependent weighting: Short→BM25, Long→Neural"""
+            # Note: ROBUST04 queries are mostly 2-4 words. 
+            # The >5 branch is rare but kept for robustness on other datasets.
             word_count = len(query.split())
             if word_count <= 3:
                 # Short query: favor BM25/lexical
