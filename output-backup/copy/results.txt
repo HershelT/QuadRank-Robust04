@@ -1,0 +1,71 @@
+C:\Users\hersh\OneDrive\Desktop\IDC\Year Three\Text Retrieval\Final Project Part A> python evaluate_runs.py --qrels files/qrels_robust04_full.txt output/run_1.res output/run_2.res output/run_3.res
+
+Loading qrels from: files/qrels_robust04_full.txt
+Loaded qrels for 249 queries
+
+============================================================
+ROBUST04 EVALUATION RESULTS
+============================================================
+
+output/run_1.res
+--------------------------------------------------
+Loaded run with 199 queries, 199000 total results
+  Queries evaluated: 199
+  Relevant docs:     13122
+  Relevant retrieved:8989
+
+  MAP:          0.3006
+  MRR:          0.6875
+  P@5:          0.5116
+  P@10:         0.4683
+  P@20:         0.4008
+  NDCG@10:      0.4493
+  NDCG@20:      0.4385
+  Recall@100:   0.4657
+  Recall@1000:  0.7735
+
+output/run_2.res
+--------------------------------------------------
+Loaded run with 199 queries, 195427 total results
+  Queries evaluated: 199
+  Relevant docs:     13122
+  Relevant retrieved:8059
+
+  MAP:          0.2683
+  MRR:          0.6847
+  P@5:          0.5568
+  P@10:         0.4970
+  P@20:         0.4050
+  NDCG@10:      0.4836
+  NDCG@20:      0.4545
+  Recall@100:   0.4226
+  Recall@1000:  0.7139
+
+output/run_3.res
+--------------------------------------------------
+Loaded run with 199 queries, 199000 total results
+  Queries evaluated: 199
+  Relevant docs:     13122
+  Relevant retrieved:9127
+
+  MAP:          0.2899
+  MRR:          0.6806
+  P@5:          0.5116
+  P@10:         0.4538
+  P@20:         0.3887
+  NDCG@10:      0.4384
+  NDCG@20:      0.4276
+  Recall@100:   0.4590
+  Recall@1000:  0.7813
+
+============================================================
+SUMMARY (sorted by MAP)
+============================================================
+
+Run                            MAP     P@10     P@20  NDCG@20
+-----------------------------------------------------------------
+run_1.res                   0.3006   0.4683   0.4008   0.4385
+run_3.res                   0.2899   0.4538   0.3887   0.4276
+run_2.res                   0.2683   0.4970   0.4050   0.4545
+
+*** BEST: run_1.res with MAP = 0.3006 ***

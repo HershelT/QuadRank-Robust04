@@ -1,0 +1,297 @@
+Final Project Part A> python robust04_ranking_solution.py --queries files/queriesROBUST.txt --qrels files/qrels_50_Queries --output output
+Loaded 249 queries
+Train: 50 queries (301-350), Test: 199 queries
+Loaded qrels for 50 queries
+Initializing Pyserini searcher with prebuilt robust04 index...
+Jan 22, 2026 1:38:31 AM org.apache.lucene.store.MemorySegmentIndexInputProvider <init>
+INFO: Using MemorySegmentIndexInput with Java 21; to disable start with -Dorg.apache.lucene.store.MMapDirectory.enableMemorySegments=false
+Searcher initialized!
+Using device: cuda
+GPU: NVIDIA GeForce RTX 5070 Laptop GPU
+VRAM: 8.5 GB
+
+================================================================================
+ROBUST04 TEXT RETRIEVAL RANKING COMPETITION
+================================================================================
+Output directory: output
+Test queries: 199
+
+📁 Loading cached parameters from output\best_params.json
+   Params: {'k1': 0.7, 'b': 0.4, 'fb_terms': 50, 'fb_docs': 5, 'original_weight': 0.5, 'rrf_k': 30, 'rrf_weights': [1.5, 0.8]}
+
+============================================================
+METHOD 1: BM25 + RM3 Query Expansion
+============================================================
+Parameters: k1=0.7, b=0.4, fb_terms=50, fb_docs=5, original_weight=0.5
+
+--- Validating on held-out queries FIRST ---
+✓ Train MAP (50 queries): 0.2714
+✓ Validation MAP (50 queries): 0.2714
+✓ Validation MAP (50 queries): 0.2714
+   (Cached for RRF tuning)
+--- Now running on 199 test queries ---
+
+--- Now running on 199 test queries ---
+
+
+BM25+RM3: 100%|██████████████████████████████████████████████| 199/199 [00:12<00:00, 16.41it/s] 
+Saved results to output\run_1.res
+
+Saved results to output\run_1.res
+
+============================================================
+
+============================================================
+============================================================
+METHOD 2: Neural Reranking with MaxP Sliding Window
+============================================================
+Trying model: BAAI/bge-reranker-v2-m3...
+✓ Successfully loaded: BAAI/bge-reranker-v2-m3
+Model: BAAI/bge-reranker-v2-m3
+Initial BM25 hits: 250, Batch size: 32
+Strategy: MaxP (splitting docs into overlapping 512-token chunks)
+
+--- Validating on held-out queries (MaxP) ---
+Val MaxP: 100%|████████████████████████████████████████████████| 50/50 [25:57<00:00, 31.15s/it] 
+✓ Validation MAP (MaxP): 0.2367
+   (Cached for RRF tuning)
+
+--- Running on test queries (MaxP) ---
+Test MaxP: 100%|███████████████████████████████████████████| 199/199 [1:44:15<00:00, 31.43s/it] 
+Saved results to output\run_2.res
+
+============================================================
+METHOD 3: RRF Fusion (Neural + BM25+RM3)
+============================================================
+
+--- Tuning RRF parameters on validation set (using cached results) ---
+  k=30, weights=[1.0, 1.0] → MAP: 0.2677
+  k=30, weights=[1.2, 1.0] → MAP: 0.2701
+  k=30, weights=[1.5, 1.0] → MAP: 0.2743
+  k=30, weights=[1.0, 0.8] → MAP: 0.2708
+  k=30, weights=[1.2, 0.8] → MAP: 0.2743
+  k=30, weights=[1.5, 0.8] → MAP: 0.2739
+  k=40, weights=[1.0, 1.0] → MAP: 0.2672
+  k=40, weights=[1.2, 1.0] → MAP: 0.2693
+  k=40, weights=[1.5, 1.0] → MAP: 0.2729
+  k=40, weights=[1.0, 0.8] → MAP: 0.2697
+  k=40, weights=[1.2, 0.8] → MAP: 0.2729
+  k=40, weights=[1.5, 0.8] → MAP: 0.2736
+  k=60, weights=[1.0, 1.0] → MAP: 0.2662
+  k=60, weights=[1.2, 1.0] → MAP: 0.2686
+  k=60, weights=[1.5, 1.0] → MAP: 0.2718
+  k=60, weights=[1.0, 0.8] → MAP: 0.2686
+  k=60, weights=[1.2, 0.8] → MAP: 0.2718
+  k=60, weights=[1.5, 0.8] → MAP: 0.2729
+  k=80, weights=[1.0, 1.0] → MAP: 0.2658
+  k=80, weights=[1.2, 1.0] → MAP: 0.2679
+  k=80, weights=[1.5, 1.0] → MAP: 0.2711
+  k=80, weights=[1.0, 0.8] → MAP: 0.2681
+  k=80, weights=[1.2, 0.8] → MAP: 0.2711
+  k=80, weights=[1.5, 0.8] → MAP: 0.2717
+
+✓ Best: k=30, weights=[1.5, 1.0] → VAL MAP: 0.2743
+💾 Saved RRF params to output\best_params.json
+--- Now running on 199 test queries with best params ---
+
+✓ Fused Neural + BM25+RM3 (k=30, weights=[1.5, 1.0])
+Saved results to output\run_3.res
+
+================================================================================
+COMPLETION SUMMARY
+================================================================================
+
+Generated files:
+  1. output\run_1.res - BM25 + RM3 (Query Expansion)
+  2. output\run_2.res - Neural Reranking (Cross-Encoder)
+  3. output\run_3.res - RRF Fusion (k=30, w=[1.5, 1.0]) ⭐ BEST
+
+Ready for submission!
+(pyserini) PS C:\Users\hersh\OneDrive\Desktop\IDC\Year Three\Text Retrieval\Final Project Part A> python evaluate_runs.py --qrels files/qrels_robust04_full.txt output/run_1.res output/run_2.res output/run_3.res
+
+Loading qrels from: files/qrels_robust04_full.txt
+Loaded qrels for 249 queries
+
+============================================================
+ROBUST04 EVALUATION RESULTS
+============================================================
+
+output/run_1.res
+--------------------------------------------------
+Loaded run with 199 queries, 199000 total results
+  Queries evaluated: 199
+  Relevant docs:     13122
+  Relevant retrieved:8989
+
+  MAP:          0.3006
+  MRR:          0.6875
+  P@5:          0.5116
+  P@10:         0.4683
+  P@20:         0.4008
+  NDCG@10:      0.4493
+  NDCG@20:      0.4385
+  Recall@100:   0.4657
+  Recall@1000:  0.7735
+
+output/run_2.res
+--------------------------------------------------
+Loaded run with 199 queries, 195427 total results
+  Queries evaluated: 199
+  Relevant docs:     13122
+  Relevant retrieved:8059
+
+  MAP:          0.2714
+  MRR:          0.7356
+  P@5:          0.5538
+  P@10:         0.4864
+  P@20:         0.3955
+  NDCG@10:      0.4889
+  NDCG@20:      0.4542
+  Recall@100:   0.4362
+  Recall@1000:  0.7139
+
+output/run_3.res
+--------------------------------------------------
+  MRR:          0.7356
+  P@5:          0.5538
+  P@10:         0.4864
+  P@20:         0.3955
+  NDCG@10:      0.4889
+  NDCG@20:      0.4542
+  Recall@100:   0.4362
+  Recall@1000:  0.7139
+
+output/run_3.res
+--------------------------------------------------
+  P@5:          0.5538
+  P@10:         0.4864
+  P@20:         0.3955
+  NDCG@10:      0.4889
+  NDCG@20:      0.4542
+  Recall@100:   0.4362
+  Recall@1000:  0.7139
+
+output/run_3.res
+--------------------------------------------------
+  P@10:         0.4864
+  P@20:         0.3955
+  NDCG@10:      0.4889
+  NDCG@20:      0.4542
+  Recall@100:   0.4362
+  Recall@1000:  0.7139
+
+output/run_3.res
+--------------------------------------------------
+Loaded run with 199 queries, 199000 total results
+  Queries evaluated: 199
+  Relevant docs:     13122
+  Relevant retrieved:8923
+  NDCG@20:      0.4542
+  Recall@100:   0.4362
+  Recall@1000:  0.7139
+
+output/run_3.res
+--------------------------------------------------
+Loaded run with 199 queries, 199000 total results
+  Queries evaluated: 199
+  Relevant docs:     13122
+  Relevant retrieved:8923
+
+  MAP:          0.3144
+  Recall@100:   0.4362
+  Recall@1000:  0.7139
+
+output/run_3.res
+--------------------------------------------------
+Loaded run with 199 queries, 199000 total results
+  Queries evaluated: 199
+  Relevant docs:     13122
+  Relevant retrieved:8923
+
+  MAP:          0.3144
+  MRR:          0.7294
+  P@5:          0.5628
+  P@10:         0.5095
+  P@20:         0.4327
+Loaded run with 199 queries, 199000 total results
+  Queries evaluated: 199
+  Relevant docs:     13122
+  Relevant retrieved:8923
+
+  MAP:          0.3144
+  MRR:          0.7294
+  P@5:          0.5628
+  P@10:         0.5095
+  P@20:         0.4327
+  NDCG@10:      0.4943
+  NDCG@20:      0.4778
+
+  MAP:          0.3144
+  MRR:          0.7294
+  P@5:          0.5628
+  P@10:         0.5095
+  P@20:         0.4327
+  NDCG@10:      0.4943
+  NDCG@20:      0.4778
+  MRR:          0.7294
+  P@5:          0.5628
+  P@10:         0.5095
+  P@20:         0.4327
+  NDCG@10:      0.4943
+  NDCG@20:      0.4778
+  Recall@100:   0.4801
+  Recall@1000:  0.7699
+  NDCG@10:      0.4943
+  NDCG@20:      0.4778
+  Recall@100:   0.4801
+  Recall@1000:  0.7699
+
+  Recall@100:   0.4801
+  Recall@1000:  0.7699
+
+  Recall@1000:  0.7699
+
+============================================================
+SUMMARY (sorted by MAP)
+
+============================================================
+SUMMARY (sorted by MAP)
+============================================================
+SUMMARY (sorted by MAP)
+============================================================
+SUMMARY (sorted by MAP)
+============================================================
+
+============================================================
+
+
+Run                            MAP     P@10     P@20  NDCG@20
+Run                            MAP     P@10     P@20  NDCG@20
+-----------------------------------------------------------------
+run_3.res                   0.3144   0.5095   0.4327   0.4778
+run_1.res                   0.3006   0.4683   0.4008   0.4385
+run_2.res                   0.2714   0.4864   0.3955   0.4542
+
+*** BEST: run_3.res with MAP = 0.3144 ***
+(pyserini) PS C:\Users\hersh\OneDrive\Desktop\IDC\Year Three\Text Retrieval\Final Project Part A>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
