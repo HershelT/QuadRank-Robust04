@@ -1,5 +1,14 @@
 # ROBUST04 Text Retrieval Ranking System
 
+![Python](https://img.shields.io/badge/python-3.8+-blue.svg?style=for-the-badge&logo=python&logoColor=white)
+![Pyserini](https://img.shields.io/badge/Pyserini-Lucene%20Index-orange.svg?style=for-the-badge)
+![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=for-the-badge&logo=PyTorch&logoColor=white)
+![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Transformers-yellow.svg?style=for-the-badge)
+![Google Gemini](https://img.shields.io/badge/Google%20Gemini-8E75B2.svg?style=for-the-badge&logo=google%20gemini&logoColor=white)
+![Ollama](https://img.shields.io/badge/Ollama-Local%20LLM-333333.svg?style=for-the-badge)
+![LiteLLM](https://img.shields.io/badge/LiteLLM-Model%20Routing-green.svg?style=for-the-badge)
+![License](https://img.shields.io/badge/License-Academic-lightgrey.svg?style=for-the-badge)
+
 A multi-method information retrieval system for the ROBUST04 document collection, implementing three distinct ranking approaches to maximize Mean Average Precision (MAP). Developed for the Text Retrieval and Search Engines course ranking competition.
 
 ## Table of Contents
