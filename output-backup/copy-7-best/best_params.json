@@ -1,0 +1,12 @@
+{
+  "k1": 0.7,
+  "b": 0.4,
+  "fb_terms": 50,
+  "fb_docs": 5,
+  "original_weight": 0.5,
+  "rrf_k": 30,
+  "rrf_weights": [
+    1.5,
+    1.0
+  ]
+}

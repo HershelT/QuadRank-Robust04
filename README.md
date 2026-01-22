@@ -423,32 +423,54 @@ Each result file contains up to 1000 documents per query, ordered by decreasing 
 
 Actual performance on 199 test queries (evaluated with full ROBUST04 qrels):
 
-| Run | Method | MAP | P@5 | P@10 | NDCG@20 | Recall@1000 |
-|-----|--------|-----|-----|------|---------|-------------|
-| **3** | **RRF Fusion (k=30, w=[1.5,1.0])** | **0.3144** ⭐ | 0.5628 | 0.5095 | 0.4778 | 0.7699 |
-| 1 | BM25 + RM3 | 0.3006 | 0.5116 | 0.4683 | 0.4385 | 0.7735 |
-| 2 | Neural Reranking (BGE-v2, MaxP) | 0.2714 | 0.5538 | 0.4864 | 0.4542 | 0.7139 |
+| Run | Method | MAP | MRR | P@10 | Recall@1000 | Runtime |
+|-----|--------|-----|-----|------|-------------|---------|
+| **3** | **4-Way RRF Fusion** ⭐ | **0.3309** | **0.7714** | **0.5181** | **0.8116** | ~30 min |
+| 1 | BM25 + RM3 | 0.3006 | 0.6875 | 0.4683 | 0.7735 | ~12 sec |
+| 2 | Neural Reranking | 0.2723 | 0.6740 | 0.4995 | 0.7139 | ~27 min |
 
 ### Key Observations
+1. **RRF Fusion is the clear winner** (+10% over BM25, +21% over Neural), proving that combining diverse signals (Lexical + Semantic + LLM) outperforms any single method.
+2. **Neural Reranking (Run 2)** excels at precision (P@10 ≈ 0.50) but suffers from lower recall (0.71), likely due to the limited candidate pool (top-250 reranked).
+3. **BM25+RM3 (Run 1)** is a robust baseline with high recall (0.77) but lower precision at top ranks.
+4. **4-Way Fusion** successfully merges:
+   - High Recall of BM25
+   - High Precision of Neural
+   - Knowledge Expansion of Query2Doc
+   - Diversity of BM25-plain
 
-1. **RRF Fusion achieves best MAP** by combining BM25's recall with Neural's precision
-2. **Neural Reranking has highest P@10** (0.4985) - excellent at ranking top documents
-3. **BM25+RM3 has highest Recall@1000** (0.7735) - finds the most relevant documents
+---
 
-### Runtime
+## The Journey: From Failure to Success
+*A summary of our development process for the class presentation.*
 
-| Method | Runtime (RTX 5070, 199 queries) |
-|--------|--------------------------------|
-| BM25 + RM3 | ~12 seconds |
-| Neural Reranking (MaxP) | ~1h 44m (250 docs × 4 chunks) |
-| RRF Fusion | < 1 second (post-processing) |
-| **Total** | **~1h 45m** |
+### ❌ Trial 1: The "Kitchen Sink" Approach (Fail)
+We started with **MaxP (Max Passage)** chunking to handle long documents.
+- **Idea**: Split every document into 4 chunks, score all 1000 chunks.
+- **Result**: Runtime was ~1 hour 45 minutes. Too slow for iteration.
+- **Issue**: MaxP is computationally expensive (4x inference).
 
-Notes:
-- MaxP sliding window increases runtime significantly (processes 4 chunks per document)
-- Neural reranking runtime depends on GPU capability and reranking depth
-- First run includes index download (~1.7GB)
-- Parameter tuning adds ~26 minutes (validation on 50 queries)
+### 💡 Trial 2: "Fast Mode" + Smart Truncation
+We switched to **First-512 Truncation** instead of MaxP.
+- **Idea**: News articles usually put the most important info in the lead paragraph (inverted pyramid style).
+- **Result**: Runtime dropped to ~27 minutes.
+- **Metric**: MAP decreased slightly (0.2714) but P@10 remained strong (0.49).
+
+### 🚀 Trial 3: The "Ensemble" breakthrough (Success)
+We realized that **Neural models struggle with keyword matching** (e.g., specific dates, names), while **BM25 fails at semantic understanding**.
+
+We implemented a **4-way Fusion Strategy**:
+1. **BM25 + RM3**: For strong baseline recall.
+2. **Neural Reranking**: For semantic precision.
+3. **Query2Doc (LLM)**: We used Gemini-Flash to expand queries with fake "perfect" answers to bridge the vocabulary gap.
+4. **BM25-Plain**: To add un-expanded diversity.
+
+**Final Innovation: Query-Dependent Weights**
+Instead of static weights, we used dynamic weighting:
+- **Short queries (<3 words)**: We heavily weighted BM25 (1.5x) because short queries are often keyword-focused.
+- **Long queries (>5 words)**: We heavily weighted Neural (1.5x) because long queries need semantic understanding.
+
+**Result**: This boosted our MAP from 0.31 to **0.3309**, securing our best result.
 
 ---
 
