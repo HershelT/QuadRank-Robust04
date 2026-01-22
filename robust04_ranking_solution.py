@@ -322,9 +322,11 @@ class ROBUST04Retriever:
         for qid in qids:
             query = self.queries[qid]
             
-            # Use QID as cache key (simpler than hash)
-            if qid in cache:
-                pseudo_doc = cache[qid]
+            # Use MD5 hash of query text as cache key (handles duplicates)
+            query_hash = hashlib.md5(query.encode('utf-8')).hexdigest()
+            
+            if query_hash in cache:
+                pseudo_doc = cache[query_hash]
                 expanded[qid] = f"{query} {pseudo_doc}"
             else:
                 expanded[qid] = query

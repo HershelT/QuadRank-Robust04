@@ -161,11 +161,15 @@ def main():
     # Find queries that need expansion
     to_expand = []
     # Find queries that need expansion
-    to_expand = []
+    seen_hashes = set()
     for qid, query in queries.items():
-        # Use QID as cache key (simpler than hash)
-        if qid not in cache:
-            to_expand.append((qid, query))
+        # Use MD5 hash of query text as key to handle duplicate queries
+        query_hash = hashlib.md5(query.encode('utf-8')).hexdigest()
+        
+        # Check if already processed (in cache) or queued (in batch)
+        if query_hash not in cache and query_hash not in seen_hashes:
+            to_expand.append((query_hash, query))
+            seen_hashes.add(query_hash)
     
     if not to_expand:
         print("\n✓ All queries already have cached expansions!")
@@ -179,12 +183,12 @@ def main():
     
     # Generate expansions
     print("\n--- Generating Expansions ---")
-    for i, (qid, query) in enumerate(to_expand):
-        print(f"[{i+1}/{len(to_expand)}] Query {qid}: {query[:50]}...")
+    for i, (query_hash, query) in enumerate(to_expand):
+        print(f"[{i+1}/{len(to_expand)}] Query Hash {query_hash[:8]}: {query[:50]}...")
         
         expansion = generate_expansion(model, query)
         if expansion:
-            cache[qid] = expansion
+            cache[query_hash] = expansion
             # Save after each to avoid losing progress
             save_cache(cache, cache_path)
             print(f"  ✓ Generated ({len(expansion)} chars)")
