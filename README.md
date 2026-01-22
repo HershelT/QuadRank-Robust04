@@ -444,6 +444,25 @@ Actual performance on 199 test queries (evaluated with full ROBUST04 qrels):
 ## The Journey: From Baseline to SOTA (MAP 0.3309)
 *A summary of the development process.*
 
+### Phase 0: Day 0 - The Starting Point (Baseline)
+*The initial V1 implementation before optimization. Note the lack of fast mode, query2doc, or dynamic weighting.*
+
+```python
+# V1 Naive Implementation (Slow, No Fusion Optimization)
+def run_v1_baseline():
+    # 1. Simple BM25+RM3
+    searcher.set_bm25(0.9, 0.4)
+    searcher.set_rm3(10, 10, 0.5)
+
+    # 2. Basic Neural Reranking (No truncation optimization)
+    # Result: 105-minute runtime!
+    cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-12-v2')
+    
+    # 3. Simple RRF (k=60, equal weights)
+    # Lacked query-dependent weighting innovation
+    pass
+```
+
 ### Phase 1: The "Kitchen Sink" & The MaxP Trap (Fail)
 **Goal**: Implement a "perfect" Neural Reranker.
 **Action**: We implemented a state-of-the-art Cross-Encoder (BGE-Reranker) with **MaxP Chunking**.
