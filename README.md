@@ -380,7 +380,7 @@ RRF_score(d) = Σ [weight_r / (k + rank_r(d))]
 Where:
 - k = 30 (tuned via validation)
 - rank_r(d) = position of document d in ranker r
-- weights = [1.5, 0.8] for [BM25+RM3, Neural] (favors BM25)
+- weights = [1.5, 1.0] for [BM25+RM3, Neural] (favors BM25)
 
 #### Why This Works
 
@@ -440,14 +440,15 @@ Actual performance on 199 test queries (evaluated with full ROBUST04 qrels):
 | Method | Runtime (RTX 5070, 199 queries) |
 |--------|--------------------------------|
 | BM25 + RM3 | ~12 seconds |
-| Neural Reranking | ~27 minutes |
+| Neural Reranking (MaxP) | ~1h 44m (250 docs × 4 chunks) |
 | RRF Fusion | < 1 second (post-processing) |
-| **Total** | **~28 minutes** |
+| **Total** | **~1h 45m** |
 
 Notes:
-- Neural reranking runtime depends on GPU capability
+- MaxP sliding window increases runtime significantly (processes 4 chunks per document)
+- Neural reranking runtime depends on GPU capability and reranking depth
 - First run includes index download (~1.7GB)
-- Parameter tuning adds ~5 minutes
+- Parameter tuning adds ~26 minutes (validation on 50 queries)
 
 ---
 
