@@ -268,45 +268,48 @@ python robust04_ranking_solution.py \
 
 ## Methods
 
-### Method 1: BM25 + RM3 Query Expansion
+### Method 1: The Lexical & Generative Suite (Runs 1, 1b, 1c)
 
-**Classification**: Standard retrieval method (class material)
+**Classification**: Standard + Novel Extensions
 
 #### Description
 
-BM25 (Best Matching 25) is a probabilistic ranking function that scores documents based on term frequency, inverse document frequency, and document length normalization. RM3 (Relevance Model 3) extends BM25 with pseudo-relevance feedback.
+We implemented three variations of lexical retrieval to create a diverse pool of candidates for fusion.
 
-#### Algorithm
+#### 1a. Standard Baseline (Run 1): BM25 + RM3
+The robust baseline. Uses **pseudo-relevance feedback** to expand queries with terms found in the top-k retrieved documents.
+*   **Role**: High Recall (0.77).
+*   **Best Params**: k1=0.7, b=0.4, fb_terms=50.
 
-1. Execute initial BM25 retrieval for query Q
-2. Assume top-k documents are relevant (pseudo-relevance)
-3. Extract discriminative terms from pseudo-relevant documents
-4. Expand original query with extracted terms
-5. Re-execute BM25 with expanded query
+#### 1b. AI-Augmented (Run 1b): BM25 + Query2Doc + RM3
+**The Novel "Novelty" Component**.
+*   **Concept**: Solves the "vocabulary mismatch" problem (e.g., query "bad weather" vs document "cyclone").
+*   **Mechanism**: We use a **Large Language Model (Gemini/Llama)** to generate a "hallucinated" relevant passage for the query. This passage is appended to the query before retrieval.
+*   **Role**: Context Injection. Finds documents that usually have zero keyword overlap with the original query.
+
+#### 1c. Conservative Baseline (Run 1c): BM25-Plain
+No expansion (No RM3, No AI).
+*   **Role**: Diversity. Both RM3 and Query2Doc can sometimes drift (add noise). This run acts as a "safety anchor" in the fusion process, ensuring we don't lose documents that match the original query keywords perfectly.
+
+#### Algorithm (Query2Doc Workflow)
+
+1.  **Generate**: LLM creates pseudo-document `D'` from Query `Q`.
+2.  **Expand**: New Query `Q* = Q + D'`.
+3.  **Retrieve**: BM25 searches using `Q*`.
+4.  **Feedback**: Apply RM3 on top of the expanded results for maximum recall.
 
 #### Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | k1 | 0.7 | Term frequency saturation parameter |
-| b | 0.65 | Document length normalization |
-| fb_terms | 70 | Number of expansion terms |
-| fb_docs | 10 | Number of feedback documents |
-| original_weight | 0.25 | Weight of original query vs. expansion |
+| b | 0.4 | Document length normalization (Tuned: 0.4 < 0.75 standard) |
+| fb_terms | 50 | Number of expansion terms (RM3) |
+| fb_docs | 5 | Number of feedback documents |
+| original_weight | 0.5 | Weight of original query vs. expansion |
 
-#### Tuned Parameters
-
-When `--tune` is enabled, the system performs grid search over:
-- k1: [0.7, 0.9, 1.0]
-- b: [0.4, 0.5, 0.65]
-- fb_terms: [10, 50, 70]
-- fb_docs: [5, 10]
-- original_weight: [0.25, 0.5]
-
-**Best parameters found (MAP 0.2714 on training set):**
-```
-k1=0.7, b=0.4, fb_terms=50, fb_docs=5, original_weight=0.5
-```
+**Why b=0.4?**
+ROBUST04 documents are long news articles. A lower `b` parameter penalizes long documents *less* than standard BM25, effectively normalizing for the verbosity of newswire text.
 
 ---
 
