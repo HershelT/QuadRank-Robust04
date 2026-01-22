@@ -58,8 +58,8 @@ def init_gemini_client():
             print("   Set it in .env file or export GEMINI_API_KEY=your_key")
             sys.exit(1)
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        print("✓ Gemini API initialized (gemini-2.0-flash)")
+        model = genai.GenerativeModel('gemini-3-flash-preview')
+        print("✓ Gemini API initialized (gemini-3-flash-preview)")
         return model
     except ImportError:
         print("❌ ERROR: google-generativeai not installed")
