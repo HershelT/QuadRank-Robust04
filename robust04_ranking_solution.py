@@ -316,28 +316,42 @@ class ROBUST04Retriever:
         # === VALIDATE FIRST on train/val sets ===
         if self.qrels:
             print("\n--- Validating on held-out queries FIRST ---")
-            self.searcher.set_bm25(k1, b)
-            self.searcher.set_rm3(fb_terms, fb_docs, original_weight)
             
-            train_results = {}
-            for qid in self.train_qids:
-                hits_list = self.searcher.search(self.queries[qid], k=hits)
-                train_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
-            
-            val_results = {}
-            for qid in self.val_qids:
-                hits_list = self.searcher.search(self.queries[qid], k=hits)
-                val_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
-            
-            self.searcher.unset_rm3()
-            
-            train_map = self.compute_map(train_results)
-            val_map = self.compute_map(val_results)
-            print(f"✓ Train MAP ({len(self.train_qids)} queries): {train_map:.4f}")
-            print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
-            
-            # Cache validation results for RRF tuning
-            self.val_results_bm25 = val_results
+            # Check for cached validation results
+            val_cache_file = os.path.join(self.output_dir, "val_results_bm25.json")
+            if os.path.exists(val_cache_file):
+                print(f"📁 Loading cached validation results from {val_cache_file}")
+                with open(val_cache_file, 'r') as f:
+                    self.val_results_bm25 = json.load(f)
+                val_map = self.compute_map(self.val_results_bm25)
+                print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
+            else:
+                self.searcher.set_bm25(k1, b)
+                self.searcher.set_rm3(fb_terms, fb_docs, original_weight)
+                
+                train_results = {}
+                for qid in self.train_qids:
+                    hits_list = self.searcher.search(self.queries[qid], k=hits)
+                    train_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
+                
+                val_results = {}
+                for qid in self.val_qids:
+                    hits_list = self.searcher.search(self.queries[qid], k=hits)
+                    val_results[qid] = [(hit.docid, hit.score) for hit in hits_list]
+                
+                self.searcher.unset_rm3()
+                
+                train_map = self.compute_map(train_results)
+                val_map = self.compute_map(val_results)
+                print(f"✓ Train MAP ({len(self.train_qids)} queries): {train_map:.4f}")
+                print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
+                
+                # Cache validation results for RRF tuning
+                self.val_results_bm25 = val_results
+                with open(val_cache_file, 'w') as f:
+                    json.dump(val_results, f)
+                print(f"💾 Saved validation results to {val_cache_file}")
+
             print("   (Cached for RRF tuning)")
             print("--- Now running on 199 test queries ---\n")
         
@@ -452,32 +466,77 @@ class ROBUST04Retriever:
         # === VALIDATE FIRST on held-out queries ===
         if self.qrels:
             print("\n--- Validating on held-out queries FIRST ---")
-            val_results = {}
-            for qid in tqdm(self.val_qids, desc="Validation"):
-                query = self.queries[qid]
-                bm25_hits = self.searcher.search(query, k=initial_hits)
-                if not bm25_hits:
-                    val_results[qid] = []
-                    continue
-                pairs = []
-                doc_ids = []
-                for hit in bm25_hits:
-                    doc = self.searcher.doc(hit.docid)
-                    if doc:
-                        raw_content = doc.raw() if hasattr(doc, 'raw') else doc.contents()
-                        if raw_content:
-                            clean_content = self._extract_text_robust(raw_content)
-                            pairs.append([query, clean_content[:2000]])
-                            doc_ids.append(hit.docid)
-                if pairs:
-                    scores = cross_encoder.predict(pairs, batch_size=batch_size, show_progress_bar=False)
-                    doc_scores = sorted(zip(doc_ids, scores), key=lambda x: x[1], reverse=True)
-                    val_results[qid] = [(docid, float(score)) for docid, score in doc_scores]
-                else:
-                    val_results[qid] = [(hit.docid, hit.score) for hit in bm25_hits]
             
-            val_map = self.compute_map(val_results)
-            print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
+            # Check cache
+            val_cache_file = os.path.join(self.output_dir, "val_results_neural.json")
+            if os.path.exists(val_cache_file):
+                print(f"📁 Loading cached neural validation results from {val_cache_file}")
+                with open(val_cache_file, 'r') as f:
+                    self.val_results_neural = json.load(f)
+                val_map = self.compute_map(self.val_results_neural)
+                print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
+            else:
+                val_results = {}
+                for qid in tqdm(self.val_qids, desc="Validation"):
+                    query = self.queries[qid]
+                    bm25_hits = self.searcher.search(query, k=initial_hits)
+                    if not bm25_hits:
+                        val_results[qid] = []
+                        continue
+                        
+                    # Prepare all chunks for all docs
+                    pairs = []
+                    doc_chunk_map = []  # (docid, num_chunks)
+                    
+                    for hit in bm25_hits:
+                        doc = self.searcher.doc(hit.docid)
+                        if doc:
+                            raw = doc.raw() if hasattr(doc, 'raw') else doc.contents()
+                            if raw:
+                                clean = self._extract_text_robust(raw)
+                                # Generate chunks (MaxP)
+                                chunks = chunk_text(clean)
+                                # Limit to max 2 chunks per doc for speed (MaxP optimization)
+                                chunks = chunks[:2]
+                                
+                                for chunk in chunks:
+                                    pairs.append([query, chunk])
+                                doc_chunk_map.append((hit.docid, len(chunks)))
+                    
+                    if not pairs:
+                        val_results[qid] = [(h.docid, h.score) for h in bm25_hits]
+                        continue
+                    
+                    # Predict
+                    try:
+                        chunk_scores = cross_encoder.predict(pairs, batch_size=batch_size, show_progress_bar=False)
+                    except RuntimeError as e:
+                        if "out of memory" in str(e).lower():
+                            chunk_scores = cross_encoder.predict(pairs, batch_size=batch_size//2, show_progress_bar=False)
+                        else:
+                            raise
+
+                    # Aggregate
+                    doc_max_scores = []
+                    idx = 0
+                    for docid, num_chunks in doc_chunk_map:
+                        if num_chunks > 0:
+                            # Take max score of chunks
+                            best_score = max(chunk_scores[idx : idx+num_chunks])
+                            doc_max_scores.append((docid, float(best_score)))
+                            idx += num_chunks
+                    
+                    # Sort
+                    val_results[qid] = sorted(doc_max_scores, key=lambda x: x[1], reverse=True)
+                
+                val_map = self.compute_map(val_results)
+                print(f"✓ Validation MAP ({len(self.val_qids)} queries): {val_map:.4f}")
+                
+                # Cache results
+                self.val_results_neural = val_results
+                with open(val_cache_file, 'w') as f:
+                    json.dump(val_results, f)
+                print(f"💾 Saved neural validation results to {val_cache_file}")
             
     def run_neural_reranking(self, model_name: str = 'auto',
                              initial_hits: int = 100, final_hits: int = 1000,
@@ -574,7 +633,7 @@ class ROBUST04Retriever:
                             clean = self._extract_text_robust(raw)
                             # Generate chunks (MaxP)
                             chunks = chunk_text(clean)
-                            # Limit to max 4 chunks per doc to prevent explosion
+                            # Limit to max 4 chunks per doc to prevent explosion (balanced)
                             chunks = chunks[:4]
                             
                             for chunk in chunks:
@@ -987,7 +1046,7 @@ class ROBUST04Retriever:
         # ============================================================
         results_2 = self.run_neural_reranking(
             model_name='auto',  # Will try: BGE-v2 → Qwen3 → BGE-large → MiniLM
-            initial_hits=250,   # Increased from 150 for better recall
+            initial_hits=250,   # User confirmed 250 hits provides better results
             batch_size=32
         )
         output_2 = os.path.join(self.output_dir, "run_2.res")
