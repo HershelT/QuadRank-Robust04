@@ -995,6 +995,11 @@ class ROBUST04Retriever:
             fb_docs=10,
             original_weight=0.3  # More aggressive expansion
         )
+        
+        if self.qrels:
+            map_1b = self.compute_map(results_1b)
+            print(f"  Method 1B Train MAP: {map_1b:.4f}")
+
         output_1b = os.path.join(self.output_dir, "run_1b.res")
         self._write_trec_run(results_1b, "run_1b", output_1b)
         
@@ -1009,6 +1014,11 @@ class ROBUST04Retriever:
         for qid in tqdm(self.test_qids, desc="BM25-plain"):
             hits = self.searcher.search(self.queries[qid], k=1000)
             results_1c[qid] = [(hit.docid, hit.score) for hit in hits]
+        
+        if self.qrels:
+            map_1c = self.compute_map(results_1c)
+            print(f"  Method 1C Train MAP: {map_1c:.4f}")
+
         output_1c = os.path.join(self.output_dir, "run_1c.res")
         self._write_trec_run(results_1c, "run_1c", output_1c)
         
