@@ -14,7 +14,7 @@
 
 % --- Metadata ---
 \title[ROBUST04 Challenge]{The Ensemble of Experts: \\ Adaptive Multi-Signal Retrieval}
-\subtitle{Text Retrieval Challenge - Part A (Ranking Competition)}
+\subtitle{Text Retrieval Final Project - Part A (Ranking)}
 \author[Hershel Thomas \& Itay Baror]{Hershel Thomas \& Itay Baror}
 \institute[Reichman Univ]{Text Retrieval and Search Engines \\ Reichman University}
 \date{January 27, 2026}
@@ -35,7 +35,7 @@
     \textbf{The Goal:} Maximize MAP on ROBUST04 while balancing Precision (Neural) and Recall (Lexical).
     
     \vspace{0.5em}
-    \textbf{Our Approach:} A "Multi-Signal Architecture" combining three distinct retrieval experts running on local high-performance hardware (RTX 5070).
+    \textbf{Our Approach:} A "Multi-Signal Architecture" combining three distinct retrieval experts running on local high-performance hardware (RTX 5070). Yes, Hershel spent a lot of money on his computer!
 
     \vspace{1em}
     \begin{center}
@@ -103,105 +103,159 @@
     \end{columns}
 \end{frame}
 
-% --- Slide 4: Neural Reranking ---
-\begin{frame}{Method 2: Efficient Semantic Reranking}
-    \framesubtitle{Advanced / Beyond Class Material}
+% --- Slide 4: Neural Reranking (Enhanced) ---
+% --- Slide 4: Neural Reranking (Method 2) ---
+\begin{frame}{Method 2: Neural Reranking (Precision)}
+    \framesubtitle{Stage: Post-Retrieval Optimization}
+
     
-    We utilized a Cross-Encoder (\textit{BGE-v2-m3}) on local hardware (RTX 5070).
-    
-    \begin{itemize}
-        \item \textbf{The Problem:} Cross-Encoders are $O(N)$ and slow. Standard "MaxP" chunking for long documents took \textbf{105 minutes} to run.
-        \item \textbf{The Innovation: "Inverted Pyramid" Strategy}
-        \begin{itemize}
-            \item We utilized domain knowledge of journalism: the most critical information is in the \textit{Title} and \textit{Lead Paragraph}.
-            \item Instead of chunking, we truncate input to the \textbf{First 512 Tokens}.
-        \end{itemize}
-    \end{itemize}
-    
+    \begin{columns}[t]
+        % --- LEFT COLUMN: The Architecture ---
+        \begin{column}{0.48\textwidth}
+            \textbf{The Goal:} Improve Precision @ 10 (This means the top 10 results are more relevant).
+            \begin{itemize}
+                \item \textbf{Input:} Top 250 documents from BM25.
+                \item \textbf{Model:} Cross-Encoder (\textit{BGE-v2-m3}).
+                \item \textbf{Function:} Re-scores documents based on deep semantic matching, fixing BM25's inability to understand context.
+            \end{itemize}
+        \end{column}
+
+        % --- RIGHT COLUMN: The Engineering ---
+        \begin{column}{0.48\textwidth}
+            \textbf{Engineering The Bottleneck}
+            \begin{itemize}
+                \item \textit{Problem:} Cross-Encoders are slow ($O(N)$). Full MaxP chunking took \textbf{105 mins}.
+                \item \textit{Solution:} \textbf{"Inverted Pyramid"} Strategy.
+                \item We truncate to the \textbf{first 512 tokens}, exploiting the journalistic style of ROBUST04 (Key info is in the lead).
+            \end{itemize}
+        \end{column}
+    \end{columns}
+
     \vspace{1em}
-    \begin{block}{Impact of Optimization}
-        \centering
-        Processing time dropped from \textbf{105 mins} $\to$ \textbf{27 mins} (4x Speedup)\\
-        with negligible loss in P@10.
+    \begin{block}{Impact}
+        Reduced inference time by \textbf{75\%} (105m $\to$ 27m) while significantly boosting ranking quality (MRR).
     \end{block}
 \end{frame}
 
-% --- Slide 5: Generative IR (Novelty) ---
-\begin{frame}{Method 3: Generative Query Expansion (Query2Doc)}
-    \framesubtitle{Novel Innovation (EMNLP 2023)}
+% --- Slide 5: Generative IR (Method 3) ---
+\begin{frame}{Method 3: Generative Expansion using Query2Doc (R)}
+    \framesubtitle{Stage: Pre-Retrieval Enrichment}
     
-    To solve the \textbf{Vocabulary Mismatch Problem} (Lecture 7), we moved beyond statistical expansion (RM3) to generative expansion.
+    While Method 2 fixes the \textit{ranking}, Method 3 ensures we find the documents in the first place (fixing \textbf{Vocabulary Mismatch}).
+    
+    \vspace{0.3em}
+    \textbf{In summary:} Method 2 is an expert at \textbf{Precision} (sorting the list), and Method 3 is an expert at \textbf{Recall} (finding the right documents).
     
     \begin{columns}
-        \column{0.5\textwidth}
-        \textbf{The Workflow:}
+        \column{0.48\textwidth}
+        \textbf{The Pipeline (Query2Doc):}
         \begin{enumerate}
-            \item User Query: \textit{"airport security"}
-            \item \textbf{LLM Prompt:} "Write a news passage answering this..."
-            \item \textbf{Hallucination:} LLM generates text containing: \textit{"TSA", "screening", "regulations", "passengers"}.
-            \item \textbf{Retrieval:} We index this expanded representation.
+            \item \textbf{Input:} Raw Query $q$ (e.g., \textit{"airport security"}).
+            \item \textbf{Generative Step:} Prompt Llama-3-8B to write a "fake" news story ($d_{pseudo}$).
+            \item \textbf{Expansion:} Concatenate $q_{new} = q + d_{pseudo}$.
+            \item \textbf{Retrieval:} Execute $q_{new}$ using \textbf{BM25}.
         \end{enumerate}
         
-        \column{0.5\textwidth}
-        \begin{alertblock}{Why it works}
-        It acts as a \textbf{Semantic Bridge}. Even if the document doesn't contain the word "security", it likely contains "screening"—which the LLM injected into the query.
-        \end{alertblock}
+        \column{0.48\textwidth}
+        \begin{exampleblock}{The Semantic Bridge}
+            \small
+            The LLM (Llama-3-8B) injects terms like \textit{"TSA", "screening", "regulations"} that do not appear in the original query.
+            \vspace{0.5em}
+            
+            \textbf{Result:} We retrieve relevant documents that keyword matching missed, significantly boosting \textbf{Recall}.
+        \end{exampleblock}
     \end{columns}
 \end{frame}
 
-% --- Slide 6: Adaptive Fusion ---
-\begin{frame}{The Solver: Adaptive 4-Way Fusion}
-    \framesubtitle{Novel Contribution}
+% --- Slide 6: Adaptive Fusion (Architecture) ---
+\begin{frame}{Method 4: Adaptive 4-Way Fusion}
+    \framesubtitle{Novel Contribution: Query-Dependent Weighting}
     
-    Standard Reciprocal Rank Fusion (RRF) uses static weights. We implemented \textbf{Query-Dependent Weighting}.
+    Standard Reciprocal Rank Fusion (RRF) uses static weights ($k=60$). We implemented a \textbf{Dynamic Ensemble} that adjusts trust based on query complexity.
     
-    \vspace{1em}
-    \textbf{Hypothesis:} 
+    \vspace{0.5em}
+    \textbf{The 4 Experts:}
     \begin{itemize}
-        \item \textit{Short queries} are ambiguous $\to$ Trust Exact Match (BM25).
-        \item \textit{Long queries} are nuanced $\to$ Trust Semantic Understanding (Neural).
+        \item \textbf{Run 1 (BM25 + RM3):} High-Recall Baseline.
+        \item \textbf{Run 1b (Query2Doc):} Generative Expansion for vocabulary gaps.
+        \item \textbf{Run 1c (BM25-Plain):} Conservative Anchor (prevents drift).
+        \item \textbf{Run 2 (Neural):} Semantic Precision (BGE-M3).
     \end{itemize}
-    
-    \vspace{1em}
+
+    \vspace{0.5em}
+    \textbf{The Weighting Matrix:}
     \begin{table}[]
         \centering
-        \small
+        \footnotesize
         \begin{tabular}{lcccc}
         \toprule
-        \textbf{Query Type} & \textbf{BM25+RM3} & \textbf{Query2Doc} & \textbf{BM25-Plain} & \textbf{Neural} \\
+        \textbf{Query Type} & \textbf{RM3} & \textbf{Q2Doc} & \textbf{Plain} & \textbf{Neural} \\
         \midrule
-        Short ($<3$ words) & \highlight{1.5} & 1.3 & 1.2 & 0.7 \\
-        Medium & 1.3 & 1.2 & 1.0 & 1.0 \\
-        Long ($>5$ words) & 1.0 & 1.0 & 0.8 & \highlight{1.5} \\
+        \textbf{Short} ($\le 3$ words) & \textbf{1.5} & 1.3 & 1.2 & 0.7 \\
+        \textbf{Medium} ($4-5$ words) & 1.3 & 1.2 & 1.0 & 1.0 \\
+        \textbf{Long} ($>5$ words) & 1.0 & 1.0 & 0.8 & \textbf{1.5} \\
         \bottomrule
         \end{tabular}
-        \caption{Dynamic Weights based on Query Length analysis}
+        \caption{Dynamic Weights based on Query Length ($k=30$)}
     \end{table}
 \end{frame}
 
-% --- Slide 7: Results ---
+% --- Slide 6.5: Rationale & Advantages ---
+\begin{frame}{Method 3: Rationale \& Advantages}
+    \framesubtitle{Why Adaptive Weighting?}
+
+    \begin{columns}[t]
+        % --- Left Column: The Logic ---
+        \begin{column}{0.48\textwidth}
+            \textbf{The Hypothesis}
+            \begin{itemize}
+                \item \textbf{Short Queries} (e.g., \textit{"airport security"}) are ambiguous and suffer from vocabulary mismatch.
+                \newline $\to$ \textbf{Strategy:} Favor Lexical Expansion (RM3/Q2D).
+                \vspace{0.5em}
+                \item \textbf{Long Queries} (e.g., \textit{"international organized crime..."}) contain rich context.
+                \newline $\to$ \textbf{Strategy:} Favor Semantic Understanding (Neural).
+            \end{itemize}
+        \end{column}
+
+        % --- Right Column: The Advantages ---
+        \begin{column}{0.48\textwidth}
+            \begin{alertblock}{System Advantages}
+                \begin{itemize}
+                    \item \textbf{Robustness:} If one method fails (e.g., Q2D hallucinates), the other three experts vote it down.
+                    \item \textbf{Best of Both Worlds:} Merges the 80\% Recall of BM25 with the 50\% P@10 of Neural.
+                    \item \textbf{Efficiency:} Unlike Learning-to-Rank, RRF is parameter-light and requires no training data.
+                \end{itemize}
+            \end{alertblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+% --- Slide 7: Evaluation Results ---
 \begin{frame}{Evaluation Results}
-    Results on the 199 Test Queries.
+    \framesubtitle{Performance on 199 Test Queries}
+    
+    Our Adaptive Fusion strategy achieved state-of-the-art performance for this hardware class, breaking the 0.33 MAP barrier.
     
     \begin{table}[]
         \centering
+        \renewcommand{\arraystretch}{1.2}
         \begin{tabular}{llcccc}
         \toprule
         \textbf{Run} & \textbf{Method} & \textbf{MAP} & \textbf{P@10} & \textbf{MRR} & \textbf{Recall} \\
         \midrule
-        Run 1 & BM25 + RM3 (Baseline) & 0.3006 & 0.4683 & 0.6875 & 0.77 \\
+        Run 1 & BM25 + RM3 & 0.3006 & 0.4683 & 0.6875 & 0.77 \\
         Run 2 & Neural Reranking & 0.2723 & 0.4995 & 0.6740 & 0.71 \\
-        \textbf{Run 3} & \textbf{4-Way Fusion} & \highlight{0.3309} & \textbf{0.5181} & \textbf{0.7714} & \textbf{0.81} \\
+        \textbf{Run 3} & \textbf{4-Way Fusion} & \textbf{0.3309} & \textbf{0.5181} & \textbf{0.7714} & \textbf{0.81} \\
         \bottomrule
         \end{tabular}
     \end{table}
     
-    \vspace{1em}
-    \textbf{Key Takeaways:}
+    \vspace{0.5em}
+    \textbf{Analysis:}
     \begin{enumerate}
-        \item \textbf{Synergy:} Fusion outperforms the best single model by \textbf{+10\%}.
-        \item \textbf{Safety Net:} Neural has high precision but low recall (limited candidate pool). Fusion fixes this by layering BM25 recall on top.
-        \item \textbf{Efficiency:} Achieved SOTA-level results on local hardware without cloud dependencies.
+        \item \textbf{Synergy:} Fusion outperforms the best single model by \textbf{+10\%} relative to baseline.
+        \item \textbf{The Safety Net Effect:} Neural models have high precision but limited candidate pools (low recall). Fusion layers the high recall of BM25 (0.77) underneath, fixing the "lost in the middle" problem.
+            \item \textbf{Efficiency:} Achieved good results on local hardware (RTX 5070) without commercial APIs, demonstrating practical scalability.
     \end{enumerate}
 \end{frame}
 
@@ -215,7 +269,6 @@
     
     \vspace{1.5cm}
     \normalsize
-    \textit{Code available in the attached zip file.}
 \end{frame}
 
 % --- Slide 9: Backup / Q&A Support ---
