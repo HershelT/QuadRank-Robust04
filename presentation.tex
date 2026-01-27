@@ -218,4 +218,42 @@
     \textit{Code available in the attached zip file.}
 \end{frame}
 
+% --- Slide 9: Backup / Q&A Support ---
+\begin{frame}{Appendix: Methodology Deep Dive}
+    \framesubtitle{Anticipating technical questions}
+
+    \begin{columns}
+        % Left Column: The "Why" behind the numbers
+        \column{0.48\textwidth}
+        \begin{block}{Why Neural MAP (0.27) $<$ Baseline (0.30)?}
+            \small
+            Neural reranking is a \textbf{Precision} tool. It optimizes the ordering of the Top-$K$ candidates but cannot find documents missed by the initial retrieval.
+            \begin{itemize}
+                \item \textit{Impact:} High P@10, but lower Recall.
+                \item \textit{Solution:} Fusion restores the Recall.
+            \end{itemize}
+        \end{block}
+
+        \begin{block}{Why tune BM25 $b \to 0.4$?}
+            \small
+            Standard $b=0.75$ assumes long documents are repetitive/spammy. ROBUST04 contains detailed news articles where \textbf{Length $\approx$ Information}.
+            \begin{itemize}
+                \item Lowering $b$ reduces the penalty for valid long documents.
+            \end{itemize}
+        \end{block}
+
+        % Right Column: Engineering & Hardware
+        \column{0.48\textwidth}
+        \begin{alertblock}{Hardware Optimization (RTX 5070)}
+            \small
+            To run a 600M parameter Cross-Encoder locally with 8GB VRAM:
+            \begin{enumerate}
+                \item \textbf{FP16 Precision:} Halved VRAM usage.
+                \item \textbf{Inverted Pyramid:} Truncated to first 512 tokens (Title+Lead) vs MaxP chunking.
+                \item \textbf{Dynamic Batching:} Auto-scaled based on memory pressure.
+            \end{enumerate}
+        \end{alertblock}
+    \end{columns}
+\end{frame}
+
 \end{document}
