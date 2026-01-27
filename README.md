@@ -660,6 +660,6 @@ This project is developed for academic purposes as part of the Text Retrieval an
 
 ## Author
 
-**Hershel Thomas**  
+**Hershel Thomas & Itay Baror**  
 Text Retrieval Course - Ranking Competition Submission  
 January 2026
